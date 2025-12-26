@@ -30,7 +30,8 @@ from telegram.ext import (
 # ⚙️ CONFIGURATION
 # ==========================================
 ADMIN_ID = 8175884349
-DEEPSEEK_API_KEY = "sk-d0522e698322494db0196cdfbdecca05"
+# 👇 UPDATED API KEY BELOW
+DEEPSEEK_API_KEY = "sk-3ff887b3eab042c9a3294fd3d62c8d80"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
 # ==========================================
