@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - SECURE EDITION (v3.7)
+TELEGRAM BOT HOSTING PLATFORM - PRODUCTION EDITION (v3.8)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -22,8 +22,16 @@ from contextlib import contextmanager
 from typing import Optional, Tuple, Dict, List, Any
 from io import BytesIO
 
-# NEW IMPORT FOR ENV VARIABLES
-from dotenv import load_dotenv
+# ==========================================
+# SAFE IMPORT FOR DOTENV
+# ==========================================
+# This prevents the "ModuleNotFoundError" crash on Render
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # If the library is missing, define a dummy function so code doesn't break
+    def load_dotenv():
+        pass
 
 from aiohttp import web, ClientSession, ClientTimeout
 from telegram import (
@@ -46,25 +54,19 @@ from telegram.ext import (
 from telegram.error import Forbidden, BadRequest
 
 # ==========================================
-# CONFIGURATION (SECURE)
+# CONFIGURATION
 # ==========================================
-# Load environment variables from .env file (for local testing)
+# Load environment variables (only does something if .env exists)
 load_dotenv()
 
 ADMIN_ID = 8175884349
 
-# SECURE: Read from Environment Variable. 
-# IF THIS CRASHES, YOU FORGOT TO ADD THE KEY IN RENDER DASHBOARD!
+# SECURE: Read API Key from Render Environment Variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
-
-# Check if key exists to prevent silent failures
-if not GEMINI_API_KEY:
-    print("CRITICAL ERROR: GEMINI_API_KEY is missing from Environment Variables!")
-    # We do not exit here to allow the bot to start, but AI features won't work.
 
 # ==========================================
 # LOGGING
