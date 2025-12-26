@@ -8,10 +8,11 @@ import importlib.metadata
 import subprocess
 import ast
 import re
+import json
 from datetime import datetime
-from aiohttp import web
+from aiohttp import web, ClientSession
 
-# Telegram & AI Imports
+# Telegram Imports
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
@@ -22,20 +23,14 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
 )
-import google.generativeai as genai
 
 # ==========================================
-# ⚙️ CONFIGURATION (HARDCODE THESE)
+# ⚙️ CONFIGURATION (HARDCODED)
 # ==========================================
-# Get your ID from @userinfobot
-ADMIN_ID = 123456789  
-# Get API Key from Google AI Studio
-GEMINI_API_KEY = "" 
-# Your Render App URL (e.g., https://my-bot-host.onrender.com)
-# Leave empty initially, but MUST be filled to enable webhooks for sub-bots
-RENDER_EXTERNAL_URL = "https://your-app-name.onrender.com" 
-# Token for the MAIN platform bot
-PLATFORM_BOT_TOKEN = "YOUR_PLATFORM_BOT_TOKEN"
+ADMIN_ID = 8175884349
+DEEPSEEK_API_KEY = "sk-d0522e698322494db0196cdfbdecca05"
+RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
+PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
 # ==========================================
 
 # Configure Logging
@@ -43,10 +38,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-
-# Configure AI
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 # Global State
 ACTIVE_BOTS = {}  # {token: application_object}
@@ -95,14 +86,14 @@ def get_db_connection():
 
 
 # ==========================================
-# 🧠 AI GENERATION LOGIC
+# 🧠 AI GENERATION LOGIC (DEEPSEEK)
 # ==========================================
 async def generate_bot_code(description, token):
-    """Generates Python code for a Telegram bot using Gemini."""
-    if not GEMINI_API_KEY:
+    """Generates Python code for a Telegram bot using DeepSeek API."""
+    if not DEEPSEEK_API_KEY:
         return None, "System Error: AI API Key not configured."
 
-    model = genai.GenerativeModel("gemini-2.0-flash-exp")
+    url = "https://api.deepseek.com/chat/completions"
     
     system_prompt = f"""
     You are a Senior Python DevOps Engineer. Write a COMPLETE, production-ready Telegram Bot.
@@ -118,11 +109,37 @@ async def generate_bot_code(description, token):
     8. Imports must be standard or common (requests, numpy, etc.).
     """
 
+    payload = {
+        "model": "deepseek-coder",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Create a bot that does: {description}"}
+        ],
+        "temperature": 0.7,
+        "stream": False
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
     try:
-        response = model.generate_content(system_prompt)
-        code = response.text.replace("```python", "").replace("```", "").strip()
-        return code, None
+        async with ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"DeepSeek Error: {error_text}")
+                    return None, f"DeepSeek API Error: {resp.status}"
+                
+                result = await resp.json()
+                content = result['choices'][0]['message']['content']
+                
+                # Cleanup code blocks
+                code = content.replace("```python", "").replace("```", "").strip()
+                return code, None
     except Exception as e:
+        logger.error(f"AI Generation Exception: {e}")
         return None, str(e)
 
 
@@ -147,7 +164,7 @@ async def install_dependencies(file_path):
                 imports.add(node.module.split('.')[0])
 
     # Whitelist/Blacklist
-    ignored = {'os', 'sys', 'asyncio', 'logging', 'telegram', 'typing', 'datetime'}
+    ignored = {'os', 'sys', 'asyncio', 'logging', 'telegram', 'typing', 'datetime', 'json', 're'}
     packages_to_install = []
     
     for lib in imports:
@@ -160,7 +177,10 @@ async def install_dependencies(file_path):
 
     if packages_to_install:
         logger.info(f"Installing dependencies: {packages_to_install}")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", *packages_to_install])
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", *packages_to_install])
+        except Exception as e:
+            logger.error(f"Failed to install dependencies: {e}")
 
 
 async def start_user_bot(token, file_path, context_app=None):
@@ -289,7 +309,7 @@ async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- CREATE AI BOT FLOW ---
 async def create_ai_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✨ Let's create a bot with AI!\n\n1️⃣ Send me the **Telegram Bot Token** from @BotFather.")
+    await update.message.reply_text("✨ Let's create a bot with AI (DeepSeek)!\n\n1️⃣ Send me the **Telegram Bot Token** from @BotFather.")
     return GET_TOKEN_AI
 
 async def receive_token_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -301,7 +321,7 @@ async def receive_desc_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     description = update.message.text
     token = context.user_data['token']
     
-    status_msg = await update.message.reply_text("🧠 AI is thinking and writing code... (This takes ~10s)")
+    status_msg = await update.message.reply_text("🧠 DeepSeek is thinking... (This takes ~15s)")
     
     code, error = await generate_bot_code(description, token)
     
