@@ -16,6 +16,7 @@ import subprocess
 import ast
 import re
 import time
+import html
 from datetime import datetime
 from contextlib import contextmanager
 from typing import Optional, Tuple, Dict
@@ -468,6 +469,16 @@ Generate complete working Python code only. No explanations."""
 
 
 # ==========================================
+# 🔧 HELPER - Escape HTML
+# ==========================================
+def esc(text: str) -> str:
+    """Escape HTML special characters."""
+    if text is None:
+        return ""
+    return html.escape(str(text))
+
+
+# ==========================================
 # 🎹 KEYBOARDS
 # ==========================================
 def main_menu_kb() -> ReplyKeyboardMarkup:
@@ -522,12 +533,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     
     await update.message.reply_text(
-        f"👋 Welcome {user.first_name}!\n\n"
-        "🤖 **Free Bot Hosting Platform**\n\n"
-        "I can host your Python Telegram bots 24/7 for FREE!\n\n"
-        "Choose an option below:",
+        f"👋 Welcome <b>{esc(user.first_name)}</b>!\n\n"
+        f"🤖 <b>Free Bot Hosting Platform</b>\n\n"
+        f"I can host your Python Telegram bots 24/7 for FREE!\n\n"
+        f"Choose an option below:",
         reply_markup=main_menu_kb(),
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     return MAIN_MENU
 
@@ -558,11 +569,11 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ==========================================
 async def host_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "📤 **Host Your Bot**\n\n"
+        "📤 <b>Host Your Bot</b>\n\n"
         "Step 1️⃣: Send me your Bot Token from @BotFather\n\n"
-        "_Example: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz_",
+        "<i>Example: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz</i>",
         reply_markup=back_kb(),
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     return HOST_GET_TOKEN
 
@@ -576,9 +587,10 @@ async def host_get_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not re.match(r'^\d+:[A-Za-z0-9_-]{35,}$', text):
         await update.message.reply_text(
             "❌ Invalid token format!\n\n"
-            "Token should look like:\n`123456789:ABCdefGHIjklMNOpqrsTUVwxyz`\n\n"
+            "Token should look like:\n"
+            "<code>123456789:ABCdefGHIjklMNOpqrsTUVwxyz</code>\n\n"
             "Get it from @BotFather",
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
         return HOST_GET_TOKEN
     
@@ -594,9 +606,9 @@ async def host_get_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     await msg.edit_text(
         f"✅ Token verified!\n\n"
-        f"🤖 Bot: @{username}\n\n"
+        f"🤖 Bot: @{esc(username)}\n\n"
         f"Step 2️⃣: Now upload your Python (.py) file",
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     return HOST_GET_FILE
 
@@ -635,16 +647,15 @@ async def host_get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         valid, error = validate_python_code(code)
         if not valid:
             os.remove(file_path)
-            await msg.edit_text(f"❌ Code Error:\n`{error}`", parse_mode='Markdown')
+            await msg.edit_text(f"❌ Code Error:\n<code>{esc(error)}</code>", parse_mode='HTML')
             return HOST_GET_FILE
         
         if 'application' not in code:
             await msg.edit_text(
-                "❌ Your code must define an `application` variable!\n\n"
-                "Example:\n```python\n"
-                "application = Application.builder().token('TOKEN').build()\n"
-                "```",
-                parse_mode='Markdown'
+                "❌ Your code must define an <code>application</code> variable!\n\n"
+                "Example:\n"
+                "<code>application = Application.builder().token('TOKEN').build()</code>",
+                parse_mode='HTML'
             )
             return HOST_GET_FILE
         
@@ -655,21 +666,22 @@ async def host_get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         
         if success:
             await msg.edit_text(
-                f"🚀 **Bot Deployed Successfully!**\n\n"
-                f"🤖 @{context.user_data.get('bot_username')}\n"
+                f"🚀 <b>Bot Deployed Successfully!</b>\n\n"
+                f"🤖 @{esc(context.user_data.get('bot_username', 'your_bot'))}\n"
                 f"📊 Status: Running 24/7\n\n"
                 f"Try sending /start to your bot!",
-                parse_mode='Markdown'
+                parse_mode='HTML'
             )
         else:
-            await msg.edit_text(f"❌ Deployment Failed:\n`{result}`", parse_mode='Markdown')
+            await msg.edit_text(f"❌ Deployment Failed:\n<code>{esc(result)}</code>", parse_mode='HTML')
         
         context.user_data.clear()
         await update.message.reply_text("What would you like to do next?", reply_markup=main_menu_kb())
         return MAIN_MENU
         
     except Exception as e:
-        await msg.edit_text(f"❌ Error: {str(e)[:100]}")
+        logger.error(f"Host file error: {e}")
+        await msg.edit_text(f"❌ Error: {esc(str(e)[:100])}", parse_mode='HTML')
         return HOST_GET_FILE
 
 
@@ -680,7 +692,7 @@ async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     context.user_data['create'] = {}
     
     await update.message.reply_text(
-        "✨ **Create New Bot**\n\n"
+        "✨ <b>Create New Bot</b>\n\n"
         "I'll generate a complete bot based on your description!\n\n"
         "Step 1️⃣: Send your Bot Token from @BotFather\n\n"
         "Don't have one? Create it:\n"
@@ -689,7 +701,7 @@ async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "3. Follow instructions\n"
         "4. Copy the token and send it here",
         reply_markup=back_kb(),
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     return CREATE_GET_TOKEN
 
@@ -715,16 +727,16 @@ async def create_get_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data['create']['username'] = username
     
     await msg.edit_text(
-        f"✅ Token verified! Bot: @{username}\n\n"
-        f"Step 2️⃣: **Describe your bot**\n\n"
+        f"✅ Token verified! Bot: @{esc(username)}\n\n"
+        f"Step 2️⃣: <b>Describe your bot</b>\n\n"
         f"Tell me what you want your bot to do.\n"
         f"Be as detailed as possible!\n\n"
-        f"_You can write in any language._\n\n"
+        f"<i>You can write in any language.</i>\n\n"
         f"Examples:\n"
         f"• A bot that tells jokes and fun facts\n"
         f"• A reminder bot with snooze feature\n"
         f"• A dictionary bot that translates words",
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     return CREATE_GET_DESCRIPTION
 
@@ -800,10 +812,10 @@ async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data['create']['use_database'] = query.data == "db_yes"
     
     await query.edit_message_text(
-        "🔄 **Generating your bot...**\n\n"
+        "🔄 <b>Generating your bot...</b>\n\n"
         "⏳ This may take 15-45 seconds...\n"
         "Please wait...",
-        parse_mode='Markdown'
+        parse_mode='HTML'
     )
     
     data = context.user_data['create']
@@ -819,7 +831,7 @@ async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
     
     if error:
-        await query.edit_message_text(f"❌ Generation Failed:\n`{error}`", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ Generation Failed:\n<code>{esc(error)}</code>", parse_mode='HTML')
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text="What would you like to do?",
@@ -827,7 +839,7 @@ async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return MAIN_MENU
     
-    await query.edit_message_text("💾 Saving code...", parse_mode='Markdown')
+    await query.edit_message_text("💾 Saving code...", parse_mode='HTML')
     
     user_id = update.effective_user.id
     token = data['token']
@@ -839,17 +851,17 @@ async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     save_bot(user_id, token, file_path, "generated", data.get('username'))
     
-    await query.edit_message_text("🚀 Deploying...", parse_mode='Markdown')
+    await query.edit_message_text("🚀 Deploying...", parse_mode='HTML')
     
     success, msg = await start_user_bot(token, file_path)
     
     if success:
         await query.edit_message_text(
-            f"🎉 **Your Bot is LIVE!**\n\n"
-            f"🤖 @{data.get('username')}\n"
+            f"🎉 <b>Your Bot is LIVE!</b>\n\n"
+            f"🤖 @{esc(data.get('username', 'your_bot'))}\n"
             f"📊 Status: Running 24/7\n\n"
             f"✅ Try sending /start to your bot!",
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
         
         try:
@@ -862,7 +874,7 @@ async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         except Exception as e:
             logger.error(f"Failed to send code file: {e}")
     else:
-        await query.edit_message_text(f"❌ Deployment Failed:\n`{msg}`", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ Deployment Failed:\n<code>{esc(msg)}</code>", parse_mode='HTML')
     
     context.user_data.clear()
     await context.bot.send_message(
@@ -888,7 +900,7 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return MAIN_MENU
     
-    text = "📊 **Your Hosted Bots:**\n\n"
+    text = "📊 <b>Your Hosted Bots:</b>\n\n"
     buttons = []
     
     for bot in bots:
@@ -896,14 +908,14 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         status = "🟢 Running" if is_active else "🔴 Stopped"
         name = bot['bot_username'] or f"Bot-{bot['token'][:8]}"
         
-        text += f"**@{name}**\n└ {status}\n\n"
+        text += f"<b>@{esc(name)}</b>\n└ {status}\n\n"
         
         emoji = "🟢" if is_active else "🔴"
         buttons.append([InlineKeyboardButton(f"{emoji} @{name}", callback_data=f"view_{bot['token'][:25]}")])
     
     await update.message.reply_text(
         text,
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
     )
     return MAIN_MENU
@@ -941,12 +953,12 @@ async def view_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_list")])
     
     await query.edit_message_text(
-        f"⚙️ **Manage Bot**\n\n"
-        f"🤖 @{target['bot_username'] or 'Unknown'}\n"
+        f"⚙️ <b>Manage Bot</b>\n\n"
+        f"🤖 @{esc(target['bot_username'] or 'Unknown')}\n"
         f"📊 Status: {status}\n"
         f"📅 Created: {target['created_at'][:10]}\n"
         f"🔧 Type: {target['creation_type'].title()}",
-        parse_mode='Markdown',
+        parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -1012,34 +1024,34 @@ async def bot_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 async def help_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     help_text = """
-🆘 **Help Center**
+🆘 <b>Help Center</b>
 
-**📤 Host My Bot**
+<b>📤 Host My Bot</b>
 Upload your existing Python bot code.
 
 Requirements:
 • Python file (.py only)
-• Must have: `application = Application.builder().token("TOKEN").build()`
+• Must have: <code>application = Application.builder().token("TOKEN").build()</code>
 • No run_polling() or run_webhook()
 
-**✨ Create New Bot**
+<b>✨ Create New Bot</b>
 Tell me what you want, and I'll create it for you!
 
 • Describe your bot in any language
 • Answer a few quick questions
 • Get a working bot in seconds!
 
-**📊 My Bots**
+<b>📊 My Bots</b>
 Manage your hosted bots:
 • Start/Stop bots
 • Restart bots
 • Delete bots
 
-**Need more help?**
+<b>Need more help?</b>
 Send your question below:
 """
     
-    await update.message.reply_text(help_text, reply_markup=back_kb(), parse_mode='Markdown')
+    await update.message.reply_text(help_text, reply_markup=back_kb(), parse_mode='HTML')
     return HELP_GET_MESSAGE
 
 
@@ -1054,184 +1066,10 @@ async def help_get_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"🆘 **Support Request**\n\n"
-                 f"👤 {user.first_name} (@{user.username})\n"
-                 f"🆔 `{user.id}`\n\n"
-                 f"📝 {text}",
-            parse_mode='Markdown'
+            text=f"🆘 <b>Support Request</b>\n\n"
+                 f"👤 {esc(user.first_name)} (@{esc(user.username)})\n"
+                 f"🆔 <code>{user.id}</code>\n\n"
+                 f"📝 {esc(text)}",
+            parse_mode='HTML'
         )
-        await update.message.reply_text("✅ Message sent! We'll get back to you soon.", reply_markup=main_menu_kb())
-    except:
-        await update.message.reply_text("❌ Failed to send. Please try again.", reply_markup=main_menu_kb())
-    
-    return MAIN_MENU
-
-
-# ==========================================
-# 👑 ADMIN COMMANDS
-# ==========================================
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    stats = get_stats()
-    active = len(ACTIVE_BOTS)
-    
-    await update.message.reply_text(
-        f"👑 **Admin Stats**\n\n"
-        f"👥 Users: {stats['users']}\n"
-        f"🤖 Total Bots: {stats['total_bots']}\n"
-        f"🟢 Active: {active}\n"
-        f"🔴 Inactive: {stats['total_bots'] - active}",
-        parse_mode='Markdown'
-    )
-
-
-async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    with get_db() as conn:
-        users = conn.execute("SELECT * FROM users ORDER BY joined_at DESC LIMIT 20").fetchall()
-    
-    text = "👥 **Recent Users:**\n\n"
-    for u in users:
-        text += f"• {u['first_name']} (@{u['username']})\n"
-    
-    await update.message.reply_text(text[:4000], parse_mode='Markdown')
-
-
-async def admin_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    with get_db() as conn:
-        bots = conn.execute("SELECT * FROM bots ORDER BY created_at DESC LIMIT 20").fetchall()
-    
-    text = "🤖 **Recent Bots:**\n\n"
-    for b in bots:
-        status = "🟢" if b['token'] in ACTIVE_BOTS else "🔴"
-        text += f"{status} @{b['bot_username'] or 'Unknown'} (User: {b['user_id']})\n"
-    
-    await update.message.reply_text(text[:4000], parse_mode='Markdown')
-
-
-# ==========================================
-# 🌐 WEBHOOK
-# ==========================================
-async def webhook_handler(request):
-    token = request.match_info.get('token')
-    
-    try:
-        data = await request.json()
-    except:
-        return web.Response(status=400)
-    
-    if token == PLATFORM_BOT_TOKEN:
-        if platform_app:
-            update = Update.de_json(data, platform_app.bot)
-            await platform_app.process_update(update)
-    elif token in ACTIVE_BOTS:
-        app = ACTIVE_BOTS[token]
-        update = Update.de_json(data, app.bot)
-        await app.process_update(update)
-    
-    return web.Response(text="OK")
-
-
-async def health_check(request):
-    return web.Response(text=f"OK - {len(ACTIVE_BOTS)} bots running")
-
-
-# ==========================================
-# 🚀 STARTUP
-# ==========================================
-async def restore_bots():
-    logger.info("Restoring bots...")
-    bots = get_all_running_bots()
-    count = 0
-    
-    for token, path in bots:
-        if os.path.exists(path):
-            success, _ = await start_user_bot(token, path)
-            if success:
-                count += 1
-    
-    logger.info(f"Restored {count}/{len(bots)} bots")
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
-    await update.message.reply_text("❌ Cancelled", reply_markup=main_menu_kb())
-    return MAIN_MENU
-
-
-def main():
-    global platform_app
-    
-    init_db()
-    logger.info("Starting Bot Hosting Platform...")
-    
-    request = HTTPXRequest(connection_pool_size=8, connect_timeout=30.0, read_timeout=30.0)
-    platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(request).build()
-    
-    conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘|🔙|🏠)"), handle_menu),
-        ],
-        states={
-            MAIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)],
-            HOST_GET_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_token)],
-            HOST_GET_FILE: [MessageHandler(filters.ALL, host_get_file)],
-            CREATE_GET_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_get_token)],
-            CREATE_GET_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_get_description)],
-            CREATE_COMMANDS_TYPE: [CallbackQueryHandler(create_commands_type, pattern=r"^cmd_")],
-            CREATE_CHAT_TYPE: [CallbackQueryHandler(create_chat_type, pattern=r"^chat_")],
-            CREATE_LANGUAGE: [CallbackQueryHandler(create_language, pattern=r"^lang_")],
-            CREATE_DATABASE: [CallbackQueryHandler(create_database, pattern=r"^db_")],
-            HELP_GET_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, help_get_message)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
-        allow_reentry=True,
-    )
-    
-    platform_app.add_handler(conv)
-    platform_app.add_handler(CommandHandler("stats", admin_stats))
-    platform_app.add_handler(CommandHandler("users", admin_users))
-    platform_app.add_handler(CommandHandler("bots", admin_bots))
-    platform_app.add_handler(CallbackQueryHandler(view_bot, pattern=r"^view_"))
-    platform_app.add_handler(CallbackQueryHandler(bot_action, pattern=r"^(stop|start|restart|delete|back)_?"))
-    
-    web_app = web.Application()
-    web_app.router.add_post('/bot/{token}', webhook_handler)
-    web_app.router.add_get('/health', health_check)
-    web_app.router.add_get('/', health_check)
-    
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    
-    async def run():
-        await platform_app.initialize()
-        await platform_app.start()
-        await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
-        logger.info("Webhook set!")
-        
-        await restore_bots()
-        
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        port = int(os.environ.get("PORT", 8080))
-        await web.TCPSite(runner, '0.0.0.0', port).start()
-        logger.info(f"Server running on port {port}")
-        
-        await asyncio.Event().wait()
-    
-    try:
-        loop.run_until_complete(run())
-    except KeyboardInterrupt:
-        pass
-
-
-if __name__ == "__main__":
-    main()
+        await update.message.reply_text("✅ Message sent! We'll get back to you soon.", 
