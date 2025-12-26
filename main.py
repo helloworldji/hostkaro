@@ -9,7 +9,7 @@ import subprocess
 import ast
 import re
 import json
-import time  # <--- Added for sleep
+import time
 from datetime import datetime
 from aiohttp import web, ClientSession
 
@@ -270,11 +270,12 @@ async def receive_token_upload(update: Update, context: ContextTypes.DEFAULT_TYP
         return GET_TOKEN_UPLOAD
     
     context.user_data['token'] = token
+    # FIX: Switched to HTML to prevent Markdown errors with underscores
     await update.message.reply_text(
         "✅ Token accepted.\n\n"
-        "2️⃣ Now, please **upload your Python (.py) file**.\n"
-        "⚠️ _Ensure your code defines an `application` object and DOES NOT use `run_polling()`._"
-    , parse_mode='Markdown')
+        "2️⃣ Now, please <b>upload your Python (.py) file</b>.\n"
+        "⚠️ <i>Ensure your code defines an <code>application</code> object and DOES NOT use <code>run_polling()</code>.</i>"
+    , parse_mode='HTML')
     return GET_FILE_UPLOAD
 
 async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,7 +305,8 @@ async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     success, msg = await start_user_bot(token, file_path)
     
     if success:
-        await context.bot.edit_message_text(f"🚀 **Bot Deployed Successfully!**\n\nStatus: Online\nEngine: Webhook", chat_id=update.effective_chat.id, message_id=status_msg.message_id, parse_mode='Markdown')
+        # FIX: Switched to HTML
+        await context.bot.edit_message_text(f"🚀 <b>Bot Deployed Successfully!</b>\n\nStatus: Online\nEngine: Webhook", chat_id=update.effective_chat.id, message_id=status_msg.message_id, parse_mode='HTML')
     else:
         await context.bot.edit_message_text(f"❌ Deployment Failed.\nError: {msg}", chat_id=update.effective_chat.id, message_id=status_msg.message_id)
 
@@ -317,7 +319,8 @@ async def create_ai_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def receive_token_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['token'] = update.message.text.strip()
-    await update.message.reply_text("2️⃣ Describe what you want your bot to do.\n\n_Example: A bot that welcomes users in groups and deletes links._", parse_mode='Markdown')
+    # FIX: Switched to HTML
+    await update.message.reply_text("2️⃣ Describe what you want your bot to do.\n\n<i>Example: A bot that welcomes users in groups and deletes links.</i>", parse_mode='HTML')
     return GET_DESC_AI
 
 async def receive_desc_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -351,7 +354,8 @@ async def receive_desc_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Launch
     success, msg = await start_user_bot(token, file_path)
     if success:
-        await update.message.reply_text(f"🚀 **Your AI Bot is LIVE!**\n\nTry sending /start to it.", parse_mode='Markdown')
+        # FIX: Switched to HTML
+        await update.message.reply_text(f"🚀 <b>Your AI Bot is LIVE!</b>\n\nTry sending /start to it.", parse_mode='HTML')
     else:
         await update.message.reply_text(f"❌ Deployment Failed.\nError: {msg}")
 
@@ -369,12 +373,13 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You have no hosted bots.")
         return
 
-    msg = "📊 **Your Bots:**\n"
+    # FIX: Switched to HTML
+    msg = "📊 <b>Your Bots:</b>\n"
     for token, status in bots:
         masked_token = f"{token[:5]}...{token[-5:]}"
-        msg += f"- `{masked_token}`: {status.upper()}\n"
+        msg += f"- <code>{masked_token}</code>: {status.upper()}\n"
     
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    await update.message.reply_text(msg, parse_mode='HTML')
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
