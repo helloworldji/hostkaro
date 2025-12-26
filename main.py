@@ -1,7 +1,7 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - ULTIMATE EDITION (v3.1)
+TELEGRAM BOT HOSTING PLATFORM - NON-TECHNICAL EDITION (v3.4)
 Host Python Telegram bots for FREE - 24/7
-Powered by Google Gemini 2.0 Flash (Interactive Mode)
+Powered by Google Gemini 2.0 Flash
 """
 
 import logging
@@ -46,7 +46,6 @@ from telegram.error import Forbidden, BadRequest
 # CONFIGURATION
 # ==========================================
 ADMIN_ID = 8175884349
-# Updated API Key
 GEMINI_API_KEY = "AIzaSyDyX6GaLo1DGGiPA_TYLVMh0OwZ32ntmY8"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
@@ -59,7 +58,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
-# Reduce noise from libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -85,8 +83,9 @@ os.makedirs(BOTS_DIR, exist_ok=True)
     CREATE_INITIAL_IDEA,
     CREATE_CONSULTATION,
     HELP_GET_MESSAGE,
-    BROADCAST_MSG
-) = range(8)
+    BROADCAST_MSG,
+    ADMIN_REPLY_MSG
+) = range(9)
 
 
 # ==========================================
@@ -95,8 +94,6 @@ os.makedirs(BOTS_DIR, exist_ok=True)
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    
-    # Users Table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -106,8 +103,6 @@ def init_db():
             last_active TEXT
         )
     """)
-    
-    # Bots Table
     c.execute("""
         CREATE TABLE IF NOT EXISTS bots (
             bot_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,18 +119,14 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
-    
-    # Simple Migration Logic (Adds columns if they don't exist)
     try:
         c.execute("SELECT is_blocked FROM bots LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE bots ADD COLUMN is_blocked INTEGER DEFAULT 0")
-        
     try:
         c.execute("SELECT update_count FROM bots LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("ALTER TABLE bots ADD COLUMN update_count INTEGER DEFAULT 0")
-        
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -230,13 +221,9 @@ def get_stats():
 
 
 # ==========================================
-# SECURITY & VALIDATION (OPTIMIZED)
+# SECURITY & VALIDATION
 # ==========================================
 def validate_python_code(code: str) -> Tuple[bool, str]:
-    """Checks for syntax errors AND malicious code."""
-    
-    # 1. Security Check: Block dangerous keywords
-    # This prevents users from stealing your API keys or messing with the server
     forbidden = [
         'os.environ', 'sys.modules', 'platform_app', 'GEMINI_API_KEY', 
         'PLATFORM_BOT_TOKEN', 'ADMIN_ID', 'import os', 'from os'
@@ -244,13 +231,10 @@ def validate_python_code(code: str) -> Tuple[bool, str]:
     for bad in forbidden:
         if bad in code:
             return False, f"Security Violation: '{bad}' is not allowed."
-
-    # 2. Syntax Check
     try:
         ast.parse(code)
     except SyntaxError as e:
         return False, f"Syntax Error at line {e.lineno}: {e.msg}"
-        
     return True, "OK"
 
 
@@ -282,7 +266,6 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'pathlib', 'io', 'hashlib', 'base64', 'urllib', 'http', 'html',
         'sqlite3', 'pickle', 'copy', 'threading', 'contextlib', 'string'
     }
-    # Map common import names to pip package names
     package_map = {
         'telegram': 'python-telegram-bot',
         'PIL': 'Pillow',
@@ -301,11 +284,9 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
             importlib.metadata.version(pkg.split('>=')[0].split('==')[0])
         except importlib.metadata.PackageNotFoundError:
             to_install.append(pkg)
-            
     if to_install:
         try:
             logger.info(f"Installing: {to_install}")
-            # Run pip install with a timeout
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install"] + to_install,
                 capture_output=True, text=True, timeout=120
@@ -338,39 +319,30 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
     try:
         if token in ACTIVE_BOTS:
             await stop_user_bot(token)
-            
         success, msg = await install_dependencies(file_path)
         if not success:
             return False, f"Dependency error: {msg}"
-            
         module_name = f"userbot_{token[:10]}_{int(time.time())}"
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         if spec is None or spec.loader is None:
             return False, "Failed to load module"
-            
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
-        
         try:
             spec.loader.exec_module(module)
         except Exception as e:
             return False, f"Code error: {str(e)[:100]}"
-            
         if not hasattr(module, 'application'):
             return False, "Code must define 'application' variable"
-            
         user_app = module.application
         await user_app.initialize()
         await user_app.start()
-        
         webhook_url = f"{RENDER_EXTERNAL_URL}/bot/{token}"
         await user_app.bot.set_webhook(url=webhook_url)
-        
         ACTIVE_BOTS[token] = user_app
         update_bot_status(token, "running")
         logger.info(f"Started bot: {token[:15]}...")
         return True, "Bot started successfully"
-        
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)[:100]}"
         logger.error(f"Failed to start bot: {error_msg}")
@@ -396,40 +368,31 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# ADVANCED GEMINI AI ENGINE
+# NON-TECHNICAL AI ENGINE
 # ==========================================
 async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
-    """
-    Acts as a product manager. Analyzes requirements and asks questions.
-    Returns JSON: { "question": str, "options": [str], "is_complete": bool, "summary": str }
-    """
+    prompt = f"""You are a helpful, non-technical Product Manager helping a user create a Telegram bot.
     
-    prompt = f"""You are an expert Telegram Bot Architect. Your goal is to gather requirements to build a Python bot.
+    Current Idea: {current_info}
+    History: {json.dumps(history)}
     
-    Current Requirement Summary: {current_info}
-    Interaction History: {json.dumps(history)}
-    
-    TASK:
-    1. Analyze the requirements.
-    2. If details are missing (e.g., language, specific features, database needs), ask ONE clarifying question.
-    3. Provide 2-4 short options for buttons (e.g., "Yes/No", "English/Hindi", "Private/Group").
-    4. If you have enough info to build a good bot, set "is_complete" to true.
+    RULES:
+    1. Ask ONE simple question to clarify the user's idea (e.g., "What should the welcome message say?", "Should it send a picture?", "What buttons do you want?").
+    2. DO NOT ask about databases, APIs, code, hosting, or tokens.
+    3. Keep it simple and friendly.
     
     Output JSON ONLY:
     {{
-        "question": "The text to ask the user",
+        "question": "Simple non-technical question",
         "options": ["Option1", "Option2"],
-        "is_complete": boolean,
-        "refined_summary": "Updated technical description of the bot based on new info"
+        "refined_summary": "Updated summary"
     }}
     """
-
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": { "responseMimeType": "application/json" }
     }
-    
     try:
         async with ClientSession() as session:
             async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
@@ -438,49 +401,37 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
                 return json.loads(text)
     except Exception as e:
         logger.error(f"Gemini Analyst Error: {e}")
-        # Fallback if AI fails to return JSON
-        return {"question": "Describe any other features:", "options": ["Done"], "is_complete": False, "refined_summary": current_info}
+        return {"question": "Any other details?", "options": ["No, Build it"], "refined_summary": current_info}
 
 async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], Optional[str]]:
-    """Generates the final Python code based on the refined summary."""
+    prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot based on this non-technical description.
     
-    prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot.
-    
-    REQUIREMENTS:
-    - Token: {token}
-    - Functionality: {summary}
+    DESCRIPTION: {summary}
+    TOKEN: {token}
     
     TECHNICAL RULES:
-    1. Use python-telegram-bot v20+ (async).
-    2. Define global: application = Application.builder().token("{token}").build()
-    3. DO NOT include application.run_polling() or run_webhook().
-    4. All handlers must be async.
-    5. Include logging and error handling.
-    6. Return ONLY raw Python code.
+    1. Translate the non-technical description into code (e.g., "Save messages" -> Use SQLite).
+    2. Use python-telegram-bot v20+ (async).
+    3. Define global: application = Application.builder().token("{token}").build()
+    4. DO NOT include application.run_polling() or run_webhook().
+    5. Return ONLY raw Python code.
     """
-    
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": { "temperature": 0.5 }
     }
-    
     try:
         async with ClientSession() as session:
             async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
                 result = await resp.json()
                 content = result['candidates'][0]['content']['parts'][0]['text']
-                
-                # Cleanup markdown
                 code = re.sub(r'^```python\s*\n?', '', content)
                 code = re.sub(r'^```\s*\n?', '', code)
                 code = re.sub(r'\n?```$', '', code).strip()
-                
-                # Verify Code
                 valid, error = validate_python_code(code)
                 if not valid: return None, f"Syntax Error: {error}"
                 if 'application' not in code: return None, "Missing 'application' object"
-                
                 return code, None
     except Exception as e:
         return None, str(e)
@@ -497,11 +448,14 @@ def esc(text) -> str:
 # ==========================================
 # KEYBOARDS
 # ==========================================
-def main_menu_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [["✨ Create Bot", "📤 Host Bot"], ["📊 My Bots", "🆘 Help"]],
-        resize_keyboard=True
-    )
+def main_menu_kb(user_id) -> ReplyKeyboardMarkup:
+    """Dynamic Main Menu - Shows Admin Button only for Admin"""
+    keyboard = [["✨ Create Bot", "📤 Host Bot"], ["📊 My Bots", "🆘 Help"]]
+    
+    if user_id == ADMIN_ID:
+        keyboard.append(["🔐 Admin Panel"]) 
+        
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def back_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup([["🔙 Back", "🏠 Main Menu"]], resize_keyboard=True)
@@ -515,7 +469,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     
     if user.id == ADMIN_ID:
-        text = f"👋 <b>Welcome Admin!</b>\n\nUse /admin to access the control panel."
+        text = f"👋 <b>Welcome Admin!</b>\n\nI have added the 🔐 <b>Admin Panel</b> button below."
     else:
         text = (
             f"👋 Welcome <b>{esc(user.first_name)}</b>!\n\n"
@@ -524,12 +478,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             f"Just tell me your idea!"
         )
     
-    await update.message.reply_text(text, reply_markup=main_menu_kb(), parse_mode='HTML')
+    await update.message.reply_text(text, reply_markup=main_menu_kb(user.id), parse_mode='HTML')
     return MAIN_MENU
 
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
+    user = update.effective_user
+    
     if "Host" in text or "📤" in text:
         return await host_start(update, context)
     elif "Create" in text or "✨" in text:
@@ -538,8 +494,13 @@ async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return await my_bots(update, context)
     elif "Help" in text or "🆘" in text:
         return await help_start(update, context)
+    elif "Admin" in text or "🔐" in text:
+        if user.id == ADMIN_ID:
+            return await admin_panel(update, context)
+        else:
+            return MAIN_MENU
     else:
-        await update.message.reply_text("Please choose an option:", reply_markup=main_menu_kb())
+        await update.message.reply_text("Please choose an option:", reply_markup=main_menu_kb(user.id))
         return MAIN_MENU
 
 
@@ -549,7 +510,7 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ==========================================
-# HOST BOT FLOW (Standard Upload)
+# HOST BOT FLOW
 # ==========================================
 async def host_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
@@ -611,7 +572,7 @@ async def host_get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 # ==========================================
-# AI CREATE BOT FLOW (INTERACTIVE)
+# AI CREATE BOT FLOW
 # ==========================================
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['create'] = {}
@@ -634,12 +595,12 @@ async def create_get_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     context.user_data['create']['token'] = text
     context.user_data['create']['username'] = username
     context.user_data['create']['history'] = []
+    context.user_data['create']['question_count'] = 0
     
     await msg.edit_text(
         f"✅ <b>Target: @{username}</b>\n\n"
         "💡 <b>What is your idea?</b>\n"
-        "Briefly describe what you want the bot to do.\n"
-        "<i>Example: A feedback bot that forwards messages to admin.</i>",
+        "Tell me what you want the bot to do (e.g., 'A shop bot', 'A quiz bot').",
         parse_mode='HTML'
     )
     return CREATE_INITIAL_IDEA
@@ -652,51 +613,46 @@ async def create_initial_idea(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['create']['summary'] = idea
     context.user_data['create']['history'].append({"role": "user", "content": idea})
     
-    await update.message.reply_text("🤔 <b>Analyzing your idea...</b>", parse_mode='HTML')
+    await update.message.reply_text("🤔 <b>Thinking...</b>", parse_mode='HTML')
     return await create_consultation_loop(update, context)
 
 async def create_consultation_loop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The recursive loop where AI asks questions via buttons."""
     data = context.user_data['create']
-    
-    # Ask Gemini
-    ai_response = await consult_gemini_analyst(data['summary'], data['history'])
-    
-    # Store refined summary
-    data['summary'] = ai_response.get('refined_summary', data['summary'])
-    
-    if ai_response.get('is_complete', False):
+    if data['question_count'] >= 3:
         await start_build_process(update, context)
         return MAIN_MENU
+        
+    ai_response = await consult_gemini_analyst(data['summary'], data['history'])
+    data['summary'] = ai_response.get('refined_summary', data['summary'])
+    data['question_count'] += 1
     
-    # AI needs more info -> Show Question & Buttons
     question = ai_response.get('question', "What else?")
     options = ai_response.get('options', ["Continue"])
     
     keyboard = []
     row = []
     for opt in options:
-        # Use short callback data to prevent issues
         row.append(InlineKeyboardButton(opt, callback_data=f"ans_{opt[:20]}"))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row: keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("✍️ Custom Answer", callback_data="ans_custom")])
+    keyboard.append([InlineKeyboardButton("🚀 Build Now", callback_data="ans_done")])
     
-    keyboard.append([InlineKeyboardButton("✍️ Type Custom Answer", callback_data="ans_custom")])
-    
-    # Send Question
     func = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
-    await func(f"🤖 <b>AI Consultant</b>\n\n{question}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+    await func(f"🤖 <b>Bot Architect ({data['question_count']}/3)</b>\n\n{question}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
     
     return CREATE_CONSULTATION
 
 async def create_handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    
     answer = query.data.replace("ans_", "")
     
+    if answer == "done":
+        await start_build_process(update, context)
+        return MAIN_MENU
     if answer == "custom":
         await query.edit_message_text("✍️ <b>Type your answer below:</b>", parse_mode='HTML')
         return CREATE_CONSULTATION 
@@ -763,7 +719,7 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     bots = get_user_bots(user_id)
     if not bots:
-        await update.message.reply_text("📭 You have 0 bots.", reply_markup=main_menu_kb())
+        await update.message.reply_text("📭 You have 0 bots.", reply_markup=main_menu_kb(user_id))
         return MAIN_MENU
         
     text = "📊 <b>Your Bots:</b>\n"
@@ -817,10 +773,8 @@ async def view_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     prefix = query.data.replace("logs_", "")
-    
     with get_db() as conn:
         bot = conn.execute("SELECT error_log FROM bots WHERE token LIKE ?", (f"{prefix}%",)).fetchone()
-    
     if bot and bot['error_log']:
         log_text = bot['error_log']
         if len(log_text) > 200:
@@ -939,7 +893,7 @@ async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "/cancel":
-        await update.message.reply_text("Cancelled.", reply_markup=main_menu_kb())
+        await update.message.reply_text("Cancelled.", reply_markup=main_menu_kb(update.effective_user.id))
         return MAIN_MENU
     
     msg = await update.message.reply_text("⏳ Sending...")
@@ -957,6 +911,39 @@ async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYP
     await msg.edit_text(f"✅ Sent to {count} users.")
     return MAIN_MENU
 
+async def admin_reply_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    target_user_id = int(query.data.replace("reply_", ""))
+    context.user_data['reply_target'] = target_user_id
+    
+    await query.edit_message_reply_markup(reply_markup=None)
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"✍️ <b>Replying to User {target_user_id}</b>\n\nType your message below:",
+        parse_mode='HTML'
+    )
+    return ADMIN_REPLY_MSG
+
+async def admin_reply_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    target_id = context.user_data.get('reply_target')
+    if not target_id:
+        await update.message.reply_text("❌ Error: Target lost. Try again.")
+        return MAIN_MENU
+    
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=f"📨 <b>Admin Reply:</b>\n\n{update.message.text}",
+            parse_mode='HTML'
+        )
+        await update.message.reply_text("✅ Reply sent!", reply_markup=main_menu_kb(update.effective_user.id))
+    except Exception as e:
+        await update.message.reply_text(f"❌ Failed to send: {e}")
+        
+    return MAIN_MENU
+
 # ==========================================
 # SYSTEM HANDLERS
 # ==========================================
@@ -965,8 +952,22 @@ async def help_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return HELP_GET_MESSAGE
 
 async def help_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await context.bot.send_message(ADMIN_ID, f"📩 <b>Support:</b>\n{update.message.text}\nFrom: {update.effective_user.id}", parse_mode='HTML')
-    await update.message.reply_text("✅ Sent.")
+    user = update.effective_user
+    admin_text = (
+        f"📩 <b>Support Request</b>\n"
+        f"👤 {esc(user.first_name)} (@{esc(user.username)})\n"
+        f"🆔 <code>{user.id}</code>\n\n"
+        f"📝 {esc(update.message.text)}"
+    )
+    reply_btn = InlineKeyboardMarkup([[InlineKeyboardButton("↩️ Reply to User", callback_data=f"reply_{user.id}")]])
+    
+    await context.bot.send_message(ADMIN_ID, text=admin_text, parse_mode='HTML', reply_markup=reply_btn)
+    
+    await update.message.reply_text(
+        "✅ <b>Message Sent!</b>\n\nYou can also contact me directly at: @aadi_io",
+        parse_mode='HTML',
+        reply_markup=main_menu_kb(user.id)
+    )
     return MAIN_MENU
 
 async def webhook_handler(request):
@@ -976,7 +977,6 @@ async def webhook_handler(request):
         if token == PLATFORM_BOT_TOKEN and platform_app:
             await platform_app.process_update(Update.de_json(data, platform_app.bot))
         elif token in ACTIVE_BOTS:
-            # Check for blocked status efficiently
             with get_db() as conn:
                 blocked = conn.execute("SELECT is_blocked FROM bots WHERE token = ?", (token,)).fetchone()
             if blocked and blocked[0]: return web.Response(text="BLOCKED")
@@ -996,12 +996,15 @@ def main():
     global platform_app
     init_db()
     
-    # Optimized Connection Pool
     req = HTTPXRequest(connection_pool_size=20, connect_timeout=30.0, read_timeout=30.0)
     platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(req).build()
     
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start), CommandHandler("admin", admin_panel), MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘)"), handle_menu)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("admin", admin_panel),
+            MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘|🔐)"), handle_menu)
+        ],
         states={
             MAIN_MENU: [MessageHandler(filters.TEXT, handle_menu)],
             HOST_GET_TOKEN: [MessageHandler(filters.TEXT, host_get_token)],
@@ -1013,7 +1016,8 @@ def main():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, create_handle_text_answer)
             ],
             HELP_GET_MESSAGE: [MessageHandler(filters.TEXT, help_send)],
-            BROADCAST_MSG: [MessageHandler(filters.TEXT, admin_broadcast_send)]
+            BROADCAST_MSG: [MessageHandler(filters.TEXT, admin_broadcast_send)],
+            ADMIN_REPLY_MSG: [MessageHandler(filters.TEXT, admin_reply_send)]
         },
         fallbacks=[CommandHandler("start", start)]
     )
@@ -1027,6 +1031,7 @@ def main():
     platform_app.add_handler(CallbackQueryHandler(view_bot, pattern="^view_"))
     platform_app.add_handler(CallbackQueryHandler(view_logs, pattern="^logs_"))
     platform_app.add_handler(CallbackQueryHandler(bot_action, pattern="^(stop|start|restart|delete|back)_"))
+    platform_app.add_handler(CallbackQueryHandler(admin_reply_start, pattern="^reply_"))
     
     app = web.Application()
     app.router.add_post('/bot/{token}', webhook_handler)
