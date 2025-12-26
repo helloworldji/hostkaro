@@ -13,8 +13,8 @@ from datetime import datetime
 from aiohttp import web, ClientSession
 
 # Telegram Imports
-# FIXED: Added ReplyKeyboardMarkup to imports
 from telegram import Update, BotCommand, ReplyKeyboardMarkup
+from telegram.request import HTTPXRequest  # <--- NEW IMPORT FOR TIMEOUT FIX
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -248,7 +248,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Hi {user.first_name}! Welcome to the **Free Bot Hosting Platform**.\n\n"
         "I can host your Python Telegram bots 24/7 on this server.\n\n"
         "👇 **Choose an option:**",
-        # FIXED: Removed 'filters.' prefix here
         reply_markup=ReplyKeyboardMarkup(
             [["📤 Host Existing Bot", "✨ Create Bot (AI)"], ["📊 My Bots", "🆘 Help"]],
             resize_keyboard=True
@@ -462,13 +461,15 @@ def main():
     # 1. Initialize DB
     init_db()
 
-    # 2. Build Platform Bot
-    platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).build()
+    # 2. Build Platform Bot with CUSTOM REQUEST TIMEOUTS
+    # This prevents the "TimedOut" error on Render
+    trequest = HTTPXRequest(connection_pool_size=8, connect_timeout=30.0, read_timeout=30.0)
+    
+    platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(trequest).build()
 
     # 3. Add Handlers
     conv_handler = ConversationHandler(
         entry_points=[
-            # FIXED: Used raw strings r"..." to fix SyntaxWarning
             MessageHandler(filters.Regex(r"^📤 Host Existing Bot$"), host_start),
             MessageHandler(filters.Regex(r"^✨ Create Bot \(AI\)$"), create_ai_start),
         ],
@@ -487,17 +488,16 @@ def main():
     platform_app.add_handler(conv_handler)
 
     # 4. Setup Aiohttp Web Server (Custom Webhook Logic)
-    # We use aiohttp directly to have full control over routing
     app = web.Application()
     app.router.add_post('/bot/{token}', webhook_handler) # Handles main bot AND user bots
     app.router.add_get('/', health_check) # For UptimeRobot
 
     # 5. Run Everything
-    # We must initialize the platform app manually since we aren't using .run_polling
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     async def runner():
+        # Initialize Platform Bot
         await platform_app.initialize()
         await platform_app.start()
         
