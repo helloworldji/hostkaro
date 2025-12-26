@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - ULTIMATE EDITION (v3.5 - CRASH FIXES)
+TELEGRAM BOT HOSTING PLATFORM - ULTIMATE EDITION (v3.6 - STABLE GEMINI)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -368,7 +368,7 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# NON-TECHNICAL AI ENGINE
+# NON-TECHNICAL AI ENGINE (FIXED)
 # ==========================================
 async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
     prompt = f"""You are a helpful, non-technical Product Manager helping a user create a Telegram bot.
@@ -388,47 +388,81 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
         "refined_summary": "Updated summary"
     }}
     """
+    
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
+    
+    # SAFETY SETTINGS ADDED TO PREVENT BLOCKS
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": { "responseMimeType": "application/json" }
+        "generationConfig": { "responseMimeType": "application/json" },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
+    
     try:
         async with ClientSession() as session:
             async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    logger.error(f"Gemini API Error {resp.status}: {await resp.text()}")
+                    return {"question": "I'm ready to build. Proceed?", "options": ["Yes, Build it"], "refined_summary": current_info}
+                
                 result = await resp.json()
+                
+                # Robust Error Handling
+                if 'candidates' not in result or not result['candidates']:
+                    logger.error(f"Gemini Empty Response: {result}")
+                    return {"question": "I have enough info. Build now?", "options": ["Build Now"], "refined_summary": current_info}
+                    
                 text = result['candidates'][0]['content']['parts'][0]['text']
                 return json.loads(text)
     except Exception as e:
-        logger.error(f"Gemini Analyst Error: {e}")
-        return {"question": "Any other details?", "options": ["No, Build it"], "refined_summary": current_info}
+        logger.error(f"Gemini Analyst Exception: {e}")
+        return {"question": "Ready to build?", "options": ["Build Now"], "refined_summary": current_info}
 
 async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], Optional[str]]:
-    prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot based on this non-technical description.
+    prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot based on this description.
     
     DESCRIPTION: {summary}
     TOKEN: {token}
     
     TECHNICAL RULES:
-    1. Translate the non-technical description into code (e.g., "Save messages" -> Use SQLite).
+    1. Translate the description into code.
     2. Use python-telegram-bot v20+ (async).
     3. Define global: application = Application.builder().token("{token}").build()
     4. DO NOT include application.run_polling() or run_webhook().
     5. Return ONLY raw Python code.
     """
+    
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
+    
+    # SAFETY SETTINGS ADDED
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": { "temperature": 0.5 }
+        "generationConfig": { "temperature": 0.5 },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
+    
     try:
         async with ClientSession() as session:
             async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
                 result = await resp.json()
+                if 'candidates' not in result:
+                    return None, "AI Generation Blocked/Failed"
+                    
                 content = result['candidates'][0]['content']['parts'][0]['text']
                 code = re.sub(r'^```python\s*\n?', '', content)
                 code = re.sub(r'^```\s*\n?', '', code)
                 code = re.sub(r'\n?```$', '', code).strip()
+                
                 valid, error = validate_python_code(code)
                 if not valid: return None, f"Syntax Error: {error}"
                 if 'application' not in code: return None, "Missing 'application' object"
@@ -451,10 +485,8 @@ def esc(text) -> str:
 def main_menu_kb(user_id) -> ReplyKeyboardMarkup:
     """Dynamic Main Menu - Shows Admin Button only for Admin"""
     keyboard = [["✨ Create Bot", "📤 Host Bot"], ["📊 My Bots", "🆘 Help"]]
-    
     if user_id == ADMIN_ID:
         keyboard.append(["🔐 Admin Panel"]) 
-        
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 def back_kb() -> ReplyKeyboardMarkup:
