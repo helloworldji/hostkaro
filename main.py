@@ -1,6 +1,7 @@
 """
-TELEGRAM BOT HOSTING PLATFORM
+TELEGRAM BOT HOSTING PLATFORM - ULTIMATE EDITION (v3.1)
 Host Python Telegram bots for FREE - 24/7
+Powered by Google Gemini 2.0 Flash (Interactive Mode)
 """
 
 import logging
@@ -15,16 +16,19 @@ import ast
 import re
 import time
 import html
+import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import Optional, Tuple, Dict
-from aiohttp import web, ClientSession, ClientTimeout
+from typing import Optional, Tuple, Dict, List, Any
+from io import BytesIO
 
+from aiohttp import web, ClientSession, ClientTimeout
 from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove
 )
 from telegram.request import HTTPXRequest
 from telegram.ext import (
@@ -36,12 +40,14 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler,
 )
+from telegram.error import Forbidden, BadRequest
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
 ADMIN_ID = 8175884349
-GEMINI_API_KEY = "AIzaSyCE1ZG6R3yMF-95UNO0dlEjBFI4GtEOXOc"
+# Updated API Key
+GEMINI_API_KEY = "AIzaSyDyX6GaLo1DGGiPA_TYLVMh0OwZ32ntmY8"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
@@ -53,6 +59,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
+# Reduce noise from libraries
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("aiohttp").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -75,13 +82,11 @@ os.makedirs(BOTS_DIR, exist_ok=True)
     HOST_GET_TOKEN,
     HOST_GET_FILE,
     CREATE_GET_TOKEN,
-    CREATE_GET_DESCRIPTION,
-    CREATE_COMMANDS_TYPE,
-    CREATE_CHAT_TYPE,
-    CREATE_LANGUAGE,
-    CREATE_DATABASE,
+    CREATE_INITIAL_IDEA,
+    CREATE_CONSULTATION,
     HELP_GET_MESSAGE,
-) = range(10)
+    BROADCAST_MSG
+) = range(8)
 
 
 # ==========================================
@@ -90,6 +95,8 @@ os.makedirs(BOTS_DIR, exist_ok=True)
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    
+    # Users Table
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -99,6 +106,8 @@ def init_db():
             last_active TEXT
         )
     """)
+    
+    # Bots Table
     c.execute("""
         CREATE TABLE IF NOT EXISTS bots (
             bot_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -110,16 +119,23 @@ def init_db():
             creation_type TEXT,
             created_at TEXT,
             error_log TEXT,
+            is_blocked INTEGER DEFAULT 0,
+            update_count INTEGER DEFAULT 0,
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT,
-            timestamp TEXT
-        )
-    """)
+    
+    # Simple Migration Logic (Adds columns if they don't exist)
+    try:
+        c.execute("SELECT is_blocked FROM bots LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE bots ADD COLUMN is_blocked INTEGER DEFAULT 0")
+        
+    try:
+        c.execute("SELECT update_count FROM bots LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("ALTER TABLE bots ADD COLUMN update_count INTEGER DEFAULT 0")
+        
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -138,9 +154,8 @@ def get_db():
 
 def save_user(user_id: int, username: str, first_name: str):
     with get_db() as conn:
-        c = conn.cursor()
         now = datetime.now().isoformat()
-        c.execute(
+        conn.execute(
             """INSERT INTO users (user_id, username, first_name, joined_at, last_active)
                VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(user_id) DO UPDATE SET
@@ -153,9 +168,8 @@ def save_user(user_id: int, username: str, first_name: str):
 
 def save_bot(user_id: int, token: str, file_path: str, creation_type: str, bot_username: str = None):
     with get_db() as conn:
-        c = conn.cursor()
         now = datetime.now().isoformat()
-        c.execute(
+        conn.execute(
             """INSERT INTO bots (user_id, token, bot_username, file_path, status, creation_type, created_at)
                VALUES (?, ?, ?, ?, 'running', ?, ?)
                ON CONFLICT(token) DO UPDATE SET
@@ -170,6 +184,11 @@ def get_user_bots(user_id: int):
         return conn.execute("SELECT * FROM bots WHERE user_id = ?", (user_id,)).fetchall()
 
 
+def get_all_bots_admin():
+    with get_db() as conn:
+        return conn.execute("SELECT * FROM bots ORDER BY created_at DESC").fetchall()
+
+
 def update_bot_status(token: str, status: str, error: str = None):
     with get_db() as conn:
         if error:
@@ -178,9 +197,22 @@ def update_bot_status(token: str, status: str, error: str = None):
             conn.execute("UPDATE bots SET status = ? WHERE token = ?", (status, token))
 
 
+def increment_bot_update_count(token: str):
+    with get_db() as conn:
+        conn.execute("UPDATE bots SET update_count = update_count + 1 WHERE token = ?", (token,))
+
+
+def toggle_bot_block(token: str) -> bool:
+    with get_db() as conn:
+        current = conn.execute("SELECT is_blocked FROM bots WHERE token = ?", (token,)).fetchone()[0]
+        new_status = 0 if current else 1
+        conn.execute("UPDATE bots SET is_blocked = ? WHERE token = ?", (new_status, token))
+        return bool(new_status)
+
+
 def get_all_running_bots():
     with get_db() as conn:
-        return conn.execute("SELECT token, file_path FROM bots WHERE status = 'running'").fetchall()
+        return conn.execute("SELECT token, file_path, is_blocked FROM bots WHERE status = 'running'").fetchall()
 
 
 def delete_bot_from_db(token: str):
@@ -193,17 +225,32 @@ def get_stats():
         c = conn.cursor()
         users = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         bots = c.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
-        return {"users": users, "total_bots": bots}
+        blocked = c.execute("SELECT COUNT(*) FROM bots WHERE is_blocked = 1").fetchone()[0]
+        return {"users": users, "total_bots": bots, "blocked": blocked}
 
 
 # ==========================================
-# CODE VALIDATION
+# SECURITY & VALIDATION (OPTIMIZED)
 # ==========================================
 def validate_python_code(code: str) -> Tuple[bool, str]:
+    """Checks for syntax errors AND malicious code."""
+    
+    # 1. Security Check: Block dangerous keywords
+    # This prevents users from stealing your API keys or messing with the server
+    forbidden = [
+        'os.environ', 'sys.modules', 'platform_app', 'GEMINI_API_KEY', 
+        'PLATFORM_BOT_TOKEN', 'ADMIN_ID', 'import os', 'from os'
+    ]
+    for bad in forbidden:
+        if bad in code:
+            return False, f"Security Violation: '{bad}' is not allowed."
+
+    # 2. Syntax Check
     try:
         ast.parse(code)
     except SyntaxError as e:
         return False, f"Syntax Error at line {e.lineno}: {e.msg}"
+        
     return True, "OK"
 
 
@@ -235,6 +282,7 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'pathlib', 'io', 'hashlib', 'base64', 'urllib', 'http', 'html',
         'sqlite3', 'pickle', 'copy', 'threading', 'contextlib', 'string'
     }
+    # Map common import names to pip package names
     package_map = {
         'telegram': 'python-telegram-bot',
         'PIL': 'Pillow',
@@ -242,19 +290,22 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'sklearn': 'scikit-learn',
         'yaml': 'pyyaml',
         'bs4': 'beautifulsoup4',
+        'requests': 'requests',
+        'numpy': 'numpy'
     }
     to_install = []
     for lib in imports:
-        if lib in stdlib:
-            continue
+        if lib in stdlib: continue
         pkg = package_map.get(lib, lib)
         try:
             importlib.metadata.version(pkg.split('>=')[0].split('==')[0])
         except importlib.metadata.PackageNotFoundError:
             to_install.append(pkg)
+            
     if to_install:
         try:
             logger.info(f"Installing: {to_install}")
+            # Run pip install with a timeout
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install"] + to_install,
                 capture_output=True, text=True, timeout=120
@@ -287,30 +338,39 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
     try:
         if token in ACTIVE_BOTS:
             await stop_user_bot(token)
+            
         success, msg = await install_dependencies(file_path)
         if not success:
             return False, f"Dependency error: {msg}"
+            
         module_name = f"userbot_{token[:10]}_{int(time.time())}"
         spec = importlib.util.spec_from_file_location(module_name, file_path)
         if spec is None or spec.loader is None:
             return False, "Failed to load module"
+            
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
+        
         try:
             spec.loader.exec_module(module)
         except Exception as e:
             return False, f"Code error: {str(e)[:100]}"
+            
         if not hasattr(module, 'application'):
             return False, "Code must define 'application' variable"
+            
         user_app = module.application
         await user_app.initialize()
         await user_app.start()
+        
         webhook_url = f"{RENDER_EXTERNAL_URL}/bot/{token}"
         await user_app.bot.set_webhook(url=webhook_url)
+        
         ACTIVE_BOTS[token] = user_app
         update_bot_status(token, "running")
         logger.info(f"Started bot: {token[:15]}...")
         return True, "Bot started successfully"
+        
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)[:100]}"
         logger.error(f"Failed to start bot: {error_msg}")
@@ -324,8 +384,7 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
             app = ACTIVE_BOTS[token]
             try:
                 await app.bot.delete_webhook()
-            except:
-                pass
+            except: pass
             await app.stop()
             await app.shutdown()
             del ACTIVE_BOTS[token]
@@ -337,115 +396,93 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# GEMINI BOT CODE GENERATOR
+# ADVANCED GEMINI AI ENGINE
 # ==========================================
-async def generate_bot_code(
-    description: str,
-    token: str,
-    use_commands: bool = True,
-    use_buttons: bool = True,
-    chat_type: str = "both",
-    language: str = "English",
-    use_database: bool = False
-) -> Tuple[Optional[str], Optional[str]]:
+async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
+    """
+    Acts as a product manager. Analyzes requirements and asks questions.
+    Returns JSON: { "question": str, "options": [str], "is_complete": bool, "summary": str }
+    """
     
-    features = []
-    if use_commands:
-        features.append("slash commands (/start, /help, custom commands)")
-    if use_buttons:
-        features.append("inline keyboard buttons")
-    if use_database:
-        features.append("SQLite database for user data")
+    prompt = f"""You are an expert Telegram Bot Architect. Your goal is to gather requirements to build a Python bot.
     
-    chat_desc = {
-        "private": "private chats only",
-        "groups": "group chats only",
-        "both": "private and group chats"
-    }.get(chat_type, "both")
+    Current Requirement Summary: {current_info}
+    Interaction History: {json.dumps(history)}
     
-    prompt = f"""You are an expert Python developer specializing in Telegram bots.
-Generate complete, production-ready Python code for a Telegram bot using python-telegram-bot library version 20+.
-
-CRITICAL RULES:
-1. Use python-telegram-bot library version 20+ (async version)
-2. Define a global variable at the end: application = Application.builder().token("{token}").build()
-3. DO NOT include application.run_polling() or application.run_webhook() at the end
-4. All handlers must be async (async def)
-5. Include proper error handling with try/except
-6. Add logging at the top
-7. Return ONLY raw Python code - no markdown, no explanations, no ``` blocks
-8. The code must be complete and ready to run
-
-BOT REQUIREMENTS:
-- Token: {token}
-- Description: {description}
-- Response language: {language}
-- Target chat type: {chat_desc}
-- Features: {', '.join(features) if features else 'basic commands'}
-- Must include /start and /help commands
-
-Generate the complete Python code now:"""
-
-    headers = {
-        "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY
-    }
+    TASK:
+    1. Analyze the requirements.
+    2. If details are missing (e.g., language, specific features, database needs), ask ONE clarifying question.
+    3. Provide 2-4 short options for buttons (e.g., "Yes/No", "English/Hindi", "Private/Group").
+    4. If you have enough info to build a good bot, set "is_complete" to true.
     
+    Output JSON ONLY:
+    {{
+        "question": "The text to ask the user",
+        "options": ["Option1", "Option2"],
+        "is_complete": boolean,
+        "refined_summary": "Updated technical description of the bot based on new info"
+    }}
+    """
+
+    headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
     payload = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": prompt}
-                ]
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.7,
-            "maxOutputTokens": 8192
-        }
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": { "responseMimeType": "application/json" }
     }
     
     try:
-        async with ClientSession(timeout=ClientTimeout(total=60)) as session:
+        async with ClientSession() as session:
             async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
-                if resp.status != 200:
-                    error_text = await resp.text()
-                    logger.error(f"Gemini API error: {resp.status} - {error_text}")
-                    return None, f"Generation failed (Error {resp.status})"
-                
                 result = await resp.json()
-                
-                try:
-                    # Extract text from Gemini response
-                    content = result['candidates'][0]['content']['parts'][0]['text']
-                    code = content.strip()
-                    
-                    # Clean up markdown if present
-                    code = re.sub(r'^```python\s*\n?', '', code)
-                    code = re.sub(r'^```\s*\n?', '', code)
-                    code = re.sub(r'\n?```$', '', code)
-                    code = code.strip()
-                    
-                    # Validate syntax
-                    valid, error = validate_python_code(code)
-                    if not valid:
-                        return None, f"Generated code error: {error}"
-                    
-                    # Check for application variable
-                    if 'application' not in code:
-                        return None, "Generation failed - missing application variable"
-                    
-                    return code, None
-                    
-                except (KeyError, IndexError) as e:
-                    logger.error(f"Failed to parse Gemini response: {e}")
-                    logger.error(f"Response: {result}")
-                    return None, "Failed to parse response"
-                    
-    except asyncio.TimeoutError:
-        return None, "Request timed out. Please try again."
+                text = result['candidates'][0]['content']['parts'][0]['text']
+                return json.loads(text)
     except Exception as e:
-        logger.error(f"Gemini API exception: {e}")
+        logger.error(f"Gemini Analyst Error: {e}")
+        # Fallback if AI fails to return JSON
+        return {"question": "Describe any other features:", "options": ["Done"], "is_complete": False, "refined_summary": current_info}
+
+async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], Optional[str]]:
+    """Generates the final Python code based on the refined summary."""
+    
+    prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot.
+    
+    REQUIREMENTS:
+    - Token: {token}
+    - Functionality: {summary}
+    
+    TECHNICAL RULES:
+    1. Use python-telegram-bot v20+ (async).
+    2. Define global: application = Application.builder().token("{token}").build()
+    3. DO NOT include application.run_polling() or run_webhook().
+    4. All handlers must be async.
+    5. Include logging and error handling.
+    6. Return ONLY raw Python code.
+    """
+    
+    headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": { "temperature": 0.5 }
+    }
+    
+    try:
+        async with ClientSession() as session:
+            async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
+                result = await resp.json()
+                content = result['candidates'][0]['content']['parts'][0]['text']
+                
+                # Cleanup markdown
+                code = re.sub(r'^```python\s*\n?', '', content)
+                code = re.sub(r'^```\s*\n?', '', code)
+                code = re.sub(r'\n?```$', '', code).strip()
+                
+                # Verify Code
+                valid, error = validate_python_code(code)
+                if not valid: return None, f"Syntax Error: {error}"
+                if 'application' not in code: return None, "Missing 'application' object"
+                
+                return code, None
+    except Exception as e:
         return None, str(e)
 
 
@@ -453,8 +490,7 @@ Generate the complete Python code now:"""
 # HELPER - Escape HTML
 # ==========================================
 def esc(text) -> str:
-    if text is None:
-        return ""
+    if text is None: return ""
     return html.escape(str(text))
 
 
@@ -463,52 +499,12 @@ def esc(text) -> str:
 # ==========================================
 def main_menu_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [["📤 Host My Bot", "✨ Create New Bot"], ["📊 My Bots", "🆘 Help"]],
+        [["✨ Create Bot", "📤 Host Bot"], ["📊 My Bots", "🆘 Help"]],
         resize_keyboard=True
     )
 
-
 def back_kb() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup([["🔙 Back", "🏠 Main Menu"]], resize_keyboard=True)
-
-
-def commands_type_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Commands Only", callback_data="cmd_commands")],
-        [InlineKeyboardButton("🔘 Buttons Only", callback_data="cmd_buttons")],
-        [InlineKeyboardButton("📝🔘 Both", callback_data="cmd_both")],
-    ])
-
-
-def chat_type_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👤 Private Only", callback_data="chat_private")],
-        [InlineKeyboardButton("👥 Groups Only", callback_data="chat_groups")],
-        [InlineKeyboardButton("👤👥 Both", callback_data="chat_both")],
-    ])
-
-
-def language_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🇬🇧 English", callback_data="lang_english"),
-            InlineKeyboardButton("🇮🇳 Hindi", callback_data="lang_hindi")
-        ],
-        [
-            InlineKeyboardButton("🇪🇸 Spanish", callback_data="lang_spanish"),
-            InlineKeyboardButton("🌍 Auto-detect", callback_data="lang_auto")
-        ],
-    ])
-
-
-def yes_no_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Yes", callback_data="db_yes"),
-            InlineKeyboardButton("❌ No", callback_data="db_no")
-        ]
-    ])
-
 
 # ==========================================
 # HANDLERS - MAIN
@@ -517,12 +513,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
     save_user(user.id, user.username, user.first_name)
     context.user_data.clear()
-    text = (
-        f"👋 Welcome <b>{esc(user.first_name)}</b>!\n\n"
-        f"🤖 <b>Free Bot Hosting Platform</b>\n\n"
-        f"I can host your Python Telegram bots 24/7 for FREE!\n\n"
-        f"Choose an option below:"
-    )
+    
+    if user.id == ADMIN_ID:
+        text = f"👋 <b>Welcome Admin!</b>\n\nUse /admin to access the control panel."
+    else:
+        text = (
+            f"👋 Welcome <b>{esc(user.first_name)}</b>!\n\n"
+            f"🤖 <b>AI Bot Builder & Hosting</b>\n\n"
+            f"I can build complex bots for you and host them for FREE.\n"
+            f"Just tell me your idea!"
+        )
+    
     await update.message.reply_text(text, reply_markup=main_menu_kb(), parse_mode='HTML')
     return MAIN_MENU
 
@@ -548,606 +549,505 @@ async def go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ==========================================
-# HOST BOT FLOW
+# HOST BOT FLOW (Standard Upload)
 # ==========================================
 async def host_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = (
-        "📤 <b>Host Your Bot</b>\n\n"
-        "Step 1: Send me your Bot Token from @BotFather\n\n"
-        "<i>Example: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz</i>"
+    await update.message.reply_text(
+        "📤 <b>Host Your Bot</b>\n\nSend your Bot Token from @BotFather:",
+        reply_markup=back_kb(), parse_mode='HTML'
     )
-    await update.message.reply_text(text, reply_markup=back_kb(), parse_mode='HTML')
     return HOST_GET_TOKEN
-
 
 async def host_get_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
-    if "Back" in text or "Main Menu" in text or "🔙" in text or "🏠" in text:
-        return await go_back(update, context)
-    if not re.match(r'^\d+:[A-Za-z0-9_-]{35,}$', text):
-        error_text = (
-            "❌ Invalid token format!\n\n"
-            "Token should look like:\n"
-            "<code>123456789:ABCdefGHIjklMNOpqrsTUVwxyz</code>\n\n"
-            "Get it from @BotFather"
-        )
-        await update.message.reply_text(error_text, parse_mode='HTML')
-        return HOST_GET_TOKEN
+    if "Back" in text or "Main Menu" in text: return await go_back(update, context)
+    
     msg = await update.message.reply_text("🔍 Verifying token...")
     valid, username, name = await validate_bot_token(text)
     if not valid:
-        await msg.edit_text("❌ Invalid or expired token. Please check and try again.")
+        await msg.edit_text("❌ Invalid token. Try again.")
         return HOST_GET_TOKEN
+        
     context.user_data['token'] = text
     context.user_data['bot_username'] = username
-    success_text = (
-        f"✅ Token verified!\n\n"
-        f"🤖 Bot: @{esc(username)}\n\n"
-        f"Step 2: Now upload your Python (.py) file"
-    )
-    await msg.edit_text(success_text, parse_mode='HTML')
+    await msg.edit_text(f"✅ Verified: @{username}\n\nNow upload your <b>.py</b> file.", parse_mode='HTML')
     return HOST_GET_FILE
 
-
 async def host_get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    if update.message.text:
-        text = update.message.text
-        if "Back" in text or "Main Menu" in text or "🔙" in text or "🏠" in text:
-            return await go_back(update, context)
-        await update.message.reply_text("❌ Please upload a .py file, not text!")
-        return HOST_GET_FILE
     if not update.message.document:
-        await update.message.reply_text("❌ Please upload a Python file (.py)")
+        await update.message.reply_text("❌ Please upload a Python file.")
         return HOST_GET_FILE
+        
     doc = update.message.document
     if not doc.file_name.endswith('.py'):
-        await update.message.reply_text("❌ Only .py files are allowed!")
+        await update.message.reply_text("❌ Only .py files allowed.")
         return HOST_GET_FILE
-    msg = await update.message.reply_text("📥 Downloading...")
-    try:
-        file = await doc.get_file()
-        token = context.user_data['token']
-        user_id = update.effective_user.id
-        filename = f"{user_id}_{token.split(':')[0]}_{int(time.time())}.py"
-        file_path = os.path.join(BOTS_DIR, filename)
-        await file.download_to_drive(file_path)
-        with open(file_path, 'r', encoding='utf-8') as f:
-            code = f.read()
-        valid, error = validate_python_code(code)
-        if not valid:
-            os.remove(file_path)
-            await msg.edit_text(f"❌ Code Error:\n<code>{esc(error)}</code>", parse_mode='HTML')
-            return HOST_GET_FILE
-        if 'application' not in code:
-            error_text = (
-                "❌ Your code must define an <code>application</code> variable!\n\n"
-                "Example:\n"
-                "<code>application = Application.builder().token('TOKEN').build()</code>"
-            )
-            await msg.edit_text(error_text, parse_mode='HTML')
-            return HOST_GET_FILE
-        await msg.edit_text("⚙️ Deploying your bot...")
-        save_bot(user_id, token, file_path, "upload", context.user_data.get('bot_username'))
-        success, result = await start_user_bot(token, file_path)
-        if success:
-            success_text = (
-                f"🚀 <b>Bot Deployed Successfully!</b>\n\n"
-                f"🤖 @{esc(context.user_data.get('bot_username', 'your_bot'))}\n"
-                f"📊 Status: Running 24/7\n\n"
-                f"Try sending /start to your bot!"
-            )
-            await msg.edit_text(success_text, parse_mode='HTML')
-        else:
-            await msg.edit_text(f"❌ Deployment Failed:\n<code>{esc(result)}</code>", parse_mode='HTML')
-        context.user_data.clear()
-        await update.message.reply_text("What would you like to do next?", reply_markup=main_menu_kb())
-        return MAIN_MENU
-    except Exception as e:
-        logger.error(f"Host file error: {e}")
-        await msg.edit_text(f"❌ Error: {esc(str(e)[:100])}", parse_mode='HTML')
+        
+    msg = await update.message.reply_text("📥 Deploying...")
+    file = await doc.get_file()
+    token = context.user_data['token']
+    user_id = update.effective_user.id
+    filename = f"{user_id}_{token.split(':')[0]}_{int(time.time())}.py"
+    file_path = os.path.join(BOTS_DIR, filename)
+    await file.download_to_drive(file_path)
+    
+    with open(file_path, 'r') as f: code = f.read()
+    valid, error = validate_python_code(code)
+    
+    if not valid or 'application' not in code:
+        os.remove(file_path)
+        await msg.edit_text(f"❌ Error: {error or 'No application object found'}")
         return HOST_GET_FILE
+        
+    save_bot(user_id, token, file_path, "upload", context.user_data.get('bot_username'))
+    success, res = await start_user_bot(token, file_path)
+    
+    if success:
+        await msg.edit_text(f"🚀 <b>Bot Deployed!</b>\n\n@{context.user_data.get('bot_username')}", parse_mode='HTML')
+    else:
+        await msg.edit_text(f"❌ Failed: {res}")
+        
+    return MAIN_MENU
 
 
 # ==========================================
-# CREATE BOT FLOW
+# AI CREATE BOT FLOW (INTERACTIVE)
 # ==========================================
 async def create_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['create'] = {}
-    text = (
-        "✨ <b>Create New Bot</b>\n\n"
-        "I will generate a complete bot based on your description!\n\n"
-        "Step 1: Send your Bot Token from @BotFather\n\n"
-        "Do not have one? Create it:\n"
-        "1. Open @BotFather\n"
-        "2. Send /newbot\n"
-        "3. Follow instructions\n"
-        "4. Copy the token and send it here"
+    await update.message.reply_text(
+        "✨ <b>AI Bot Builder</b>\n\nFirst, send your Bot Token from @BotFather:",
+        reply_markup=back_kb(), parse_mode='HTML'
     )
-    await update.message.reply_text(text, reply_markup=back_kb(), parse_mode='HTML')
     return CREATE_GET_TOKEN
-
 
 async def create_get_token(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
-    if "Back" in text or "Main Menu" in text or "🔙" in text or "🏠" in text:
-        return await go_back(update, context)
-    if not re.match(r'^\d+:[A-Za-z0-9_-]{35,}$', text):
-        await update.message.reply_text("❌ Invalid token format. Please try again.")
-        return CREATE_GET_TOKEN
+    if "Back" in text or "Main Menu" in text: return await go_back(update, context)
+    
     msg = await update.message.reply_text("🔍 Verifying...")
     valid, username, name = await validate_bot_token(text)
     if not valid:
-        await msg.edit_text("❌ Invalid token. Please check and try again.")
+        await msg.edit_text("❌ Invalid token.")
         return CREATE_GET_TOKEN
+        
     context.user_data['create']['token'] = text
     context.user_data['create']['username'] = username
-    success_text = (
-        f"✅ Token verified! Bot: @{esc(username)}\n\n"
-        f"Step 2: <b>Describe your bot</b>\n\n"
-        f"Tell me what you want your bot to do.\n"
-        f"Be as detailed as possible!\n\n"
-        f"<i>You can write in any language.</i>\n\n"
-        f"Examples:\n"
-        f"- A bot that tells jokes and fun facts\n"
-        f"- A reminder bot with snooze feature\n"
-        f"- A dictionary bot that translates words"
-    )
-    await msg.edit_text(success_text, parse_mode='HTML')
-    return CREATE_GET_DESCRIPTION
-
-
-async def create_get_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text
-    if "Back" in text or "Main Menu" in text or "🔙" in text or "🏠" in text:
-        return await go_back(update, context)
-    if len(text) < 10:
-        await update.message.reply_text("📝 Please provide more details (at least 10 characters)")
-        return CREATE_GET_DESCRIPTION
-    context.user_data['create']['description'] = text
-    await update.message.reply_text(
-        "Step 3: How should users interact with your bot?",
-        reply_markup=commands_type_kb()
-    )
-    return CREATE_COMMANDS_TYPE
-
-
-async def create_commands_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    choice = query.data.replace("cmd_", "")
-    context.user_data['create']['use_commands'] = choice in ['commands', 'both']
-    context.user_data['create']['use_buttons'] = choice in ['buttons', 'both']
-    await query.edit_message_text(
-        "Step 4: Where will this bot be used?",
-        reply_markup=chat_type_kb()
-    )
-    return CREATE_CHAT_TYPE
-
-
-async def create_chat_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data['create']['chat_type'] = query.data.replace("chat_", "")
-    await query.edit_message_text(
-        "Step 5: What language should the bot respond in?",
-        reply_markup=language_kb()
-    )
-    return CREATE_LANGUAGE
-
-
-async def create_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    lang = query.data.replace("lang_", "")
-    if lang == "auto":
-        lang = "same language as user message"
-    context.user_data['create']['language'] = lang.title()
-    await query.edit_message_text(
-        "Step 6: Does your bot need to store user data?\n\n(e.g., preferences, scores, history)",
-        reply_markup=yes_no_kb()
-    )
-    return CREATE_DATABASE
-
-
-async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    context.user_data['create']['use_database'] = query.data == "db_yes"
-    await query.edit_message_text(
-        "🔄 <b>Generating your bot with Gemini...</b>\n\nThis may take 10-30 seconds.\nPlease wait...",
+    context.user_data['create']['history'] = []
+    
+    await msg.edit_text(
+        f"✅ <b>Target: @{username}</b>\n\n"
+        "💡 <b>What is your idea?</b>\n"
+        "Briefly describe what you want the bot to do.\n"
+        "<i>Example: A feedback bot that forwards messages to admin.</i>",
         parse_mode='HTML'
     )
+    return CREATE_INITIAL_IDEA
+
+async def create_initial_idea(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    idea = update.message.text
+    if "Back" in idea or "Main Menu" in idea: 
+        return await go_back(update, context)
+    
+    context.user_data['create']['summary'] = idea
+    context.user_data['create']['history'].append({"role": "user", "content": idea})
+    
+    await update.message.reply_text("🤔 <b>Analyzing your idea...</b>", parse_mode='HTML')
+    return await create_consultation_loop(update, context)
+
+async def create_consultation_loop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """The recursive loop where AI asks questions via buttons."""
     data = context.user_data['create']
-    code, error = await generate_bot_code(
-        description=data['description'],
-        token=data['token'],
-        use_commands=data.get('use_commands', True),
-        use_buttons=data.get('use_buttons', True),
-        chat_type=data.get('chat_type', 'both'),
-        language=data.get('language', 'English'),
-        use_database=data.get('use_database', False)
-    )
-    if error:
-        await query.edit_message_text(
-            f"❌ Generation Failed:\n<code>{esc(error)}</code>",
-            parse_mode='HTML'
-        )
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="What would you like to do?",
-            reply_markup=main_menu_kb()
-        )
+    
+    # Ask Gemini
+    ai_response = await consult_gemini_analyst(data['summary'], data['history'])
+    
+    # Store refined summary
+    data['summary'] = ai_response.get('refined_summary', data['summary'])
+    
+    if ai_response.get('is_complete', False):
+        await start_build_process(update, context)
         return MAIN_MENU
-    await query.edit_message_text("💾 Saving code...", parse_mode='HTML')
+    
+    # AI needs more info -> Show Question & Buttons
+    question = ai_response.get('question', "What else?")
+    options = ai_response.get('options', ["Continue"])
+    
+    keyboard = []
+    row = []
+    for opt in options:
+        # Use short callback data to prevent issues
+        row.append(InlineKeyboardButton(opt, callback_data=f"ans_{opt[:20]}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row: keyboard.append(row)
+    
+    keyboard.append([InlineKeyboardButton("✍️ Type Custom Answer", callback_data="ans_custom")])
+    
+    # Send Question
+    func = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
+    await func(f"🤖 <b>AI Consultant</b>\n\n{question}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+    
+    return CREATE_CONSULTATION
+
+async def create_handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    answer = query.data.replace("ans_", "")
+    
+    if answer == "custom":
+        await query.edit_message_text("✍️ <b>Type your answer below:</b>", parse_mode='HTML')
+        return CREATE_CONSULTATION 
+        
+    context.user_data['create']['history'].append({"role": "user", "content": answer})
+    await query.edit_message_text(f"✅ Selected: <b>{answer}</b>\nThinking...", parse_mode='HTML')
+    return await create_consultation_loop(update, context)
+
+async def create_handle_text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text
+    context.user_data['create']['history'].append({"role": "user", "content": text})
+    await update.message.reply_text("✅ <b>Got it.</b> Thinking...", parse_mode='HTML')
+    return await create_consultation_loop(update, context)
+
+async def start_build_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_func = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
+    msg = await msg_func("🏗️ <b>Blueprint Complete!</b>\n\nCoding your bot now... (approx 20s)", parse_mode='HTML')
+    
+    data = context.user_data['create']
+    code, error = await generate_final_code(data['summary'], data['token'])
+    
+    if error:
+        await msg.edit_text(f"❌ Coding Failed:\n{error}")
+        return
+        
     user_id = update.effective_user.id
     token = data['token']
-    filename = f"{user_id}_{token.split(':')[0]}_gen_{int(time.time())}.py"
+    filename = f"{user_id}_{token.split(':')[0]}_ai_{int(time.time())}.py"
     file_path = os.path.join(BOTS_DIR, filename)
+    
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(code)
-    save_bot(user_id, token, file_path, "generated", data.get('username'))
-    await query.edit_message_text("🚀 Deploying...", parse_mode='HTML')
-    success, msg = await start_user_bot(token, file_path)
+        
+    save_bot(user_id, token, file_path, "ai_generated", data['username'])
+    
+    await msg.edit_text("🚀 Deploying to server...", parse_mode='HTML')
+    success, res = await start_user_bot(token, file_path)
+    
     if success:
-        success_text = (
-            f"🎉 <b>Your Bot is LIVE!</b>\n\n"
-            f"🤖 @{esc(data.get('username', 'your_bot'))}\n"
-            f"📊 Status: Running 24/7\n\n"
-            f"Try sending /start to your bot!"
+        await msg.edit_text(
+            f"🎉 <b>Bot Launched Successfully!</b>\n\n"
+            f"🤖 Bot: @{data['username']}\n"
+            f"📜 Idea: {data['summary'][:100]}...\n\n"
+            f"Status: 🟢 Online 24/7",
+            parse_mode='HTML'
         )
-        await query.edit_message_text(success_text, parse_mode='HTML')
         try:
             with open(file_path, 'rb') as f:
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=f,
-                    filename=f"{data.get('username', 'bot')}_code.py",
-                    caption="📄 Here is your bot source code!"
+                    filename=f"{data['username']}.py",
+                    caption="💾 Source Code"
                 )
-        except Exception as e:
-            logger.error(f"Failed to send code file: {e}")
+        except: pass
     else:
-        await query.edit_message_text(
-            f"❌ Deployment Failed:\n<code>{esc(msg)}</code>",
-            parse_mode='HTML'
-        )
-    context.user_data.clear()
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text="What would you like to do next?",
-        reply_markup=main_menu_kb()
-    )
-    return MAIN_MENU
+        await msg.edit_text(f"❌ Deployment Error: {res}")
 
 
 # ==========================================
-# MY BOTS
+# MY BOTS & MANAGEMENT
 # ==========================================
 async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     bots = get_user_bots(user_id)
     if not bots:
-        await update.message.reply_text(
-            "📭 You have not hosted any bots yet.\n\n"
-            "Click 'Host My Bot' or 'Create New Bot' to get started!",
-            reply_markup=main_menu_kb()
-        )
+        await update.message.reply_text("📭 You have 0 bots.", reply_markup=main_menu_kb())
         return MAIN_MENU
-    text = "📊 <b>Your Hosted Bots:</b>\n\n"
+        
+    text = "📊 <b>Your Bots:</b>\n"
     buttons = []
     for bot in bots:
-        is_active = bot['token'] in ACTIVE_BOTS
-        status = "🟢 Running" if is_active else "🔴 Stopped"
-        name = bot['bot_username'] or f"Bot-{bot['token'][:8]}"
-        text += f"<b>@{esc(name)}</b>\n└ {status}\n\n"
-        emoji = "🟢" if is_active else "🔴"
-        buttons.append([InlineKeyboardButton(f"{emoji} @{name}", callback_data=f"view_{bot['token'][:25]}")])
-    await update.message.reply_text(
-        text,
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(buttons) if buttons else None
-    )
+        status = "🟢" if bot['token'] in ACTIVE_BOTS else "🔴"
+        if bot['is_blocked']: status = "🚫"
+        name = bot['bot_username'] or "Bot"
+        buttons.append([InlineKeyboardButton(f"{status} @{name}", callback_data=f"view_{bot['token'][:10]}")])
+        
+    await update.message.reply_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(buttons))
     return MAIN_MENU
-
 
 async def view_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    token_prefix = query.data.replace("view_", "")
-    user_id = update.effective_user.id
-    bots = get_user_bots(user_id)
-    target = None
-    for bot in bots:
-        if bot['token'].startswith(token_prefix):
-            target = bot
-            break
-    if not target:
-        await query.edit_message_text("❌ Bot not found")
+    prefix = query.data.replace("view_", "")
+    
+    with get_db() as conn:
+        bot = conn.execute("SELECT * FROM bots WHERE token LIKE ?", (f"{prefix}%",)).fetchone()
+        
+    if not bot:
+        await query.edit_message_text("❌ Bot not found.")
         return
-    is_active = target['token'] in ACTIVE_BOTS
-    status = "🟢 Running" if is_active else "🔴 Stopped"
-    buttons = []
-    if is_active:
-        buttons.append([InlineKeyboardButton("🛑 Stop", callback_data=f"stop_{token_prefix}")])
-        buttons.append([InlineKeyboardButton("🔄 Restart", callback_data=f"restart_{token_prefix}")])
-    else:
-        buttons.append([InlineKeyboardButton("▶️ Start", callback_data=f"start_{token_prefix}")])
-    buttons.append([InlineKeyboardButton("🗑️ Delete", callback_data=f"delete_{token_prefix}")])
-    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="back_list")])
+        
+    is_active = bot['token'] in ACTIVE_BOTS
+    status = "🟢 Online" if is_active else "🔴 Offline"
+    if bot['is_blocked']: status = "🚫 Blocked by Admin"
+    
     text = (
-        f"⚙️ <b>Manage Bot</b>\n\n"
-        f"🤖 @{esc(target['bot_username'] or 'Unknown')}\n"
-        f"📊 Status: {status}\n"
-        f"📅 Created: {target['created_at'][:10]}\n"
-        f"🔧 Type: {target['creation_type'].title()}"
+        f"🤖 <b>@{esc(bot['bot_username'])}</b>\n"
+        f"Status: {status}\n"
+        f"Updates: {bot['update_count']}\n"
+        f"Created: {bot['created_at'][:10]}"
     )
-    await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(buttons))
+    
+    btns = []
+    if not bot['is_blocked']:
+        if is_active:
+            btns.append([InlineKeyboardButton("🛑 Stop", callback_data=f"stop_{prefix}"), 
+                         InlineKeyboardButton("🔄 Restart", callback_data=f"restart_{prefix}")])
+        else:
+            btns.append([InlineKeyboardButton("▶️ Start", callback_data=f"start_{prefix}")])
+    
+    btns.append([InlineKeyboardButton("📜 Error Logs", callback_data=f"logs_{prefix}")])
+    btns.append([InlineKeyboardButton("🗑️ Delete", callback_data=f"delete_{prefix}")])
+    btns.append([InlineKeyboardButton("🔙 Back", callback_data="back_list")])
+    
+    await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(btns))
 
+async def view_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    prefix = query.data.replace("logs_", "")
+    
+    with get_db() as conn:
+        bot = conn.execute("SELECT error_log FROM bots WHERE token LIKE ?", (f"{prefix}%",)).fetchone()
+    
+    if bot and bot['error_log']:
+        log_text = bot['error_log']
+        if len(log_text) > 200:
+            bio = BytesIO(log_text.encode())
+            bio.name = "error_log.txt"
+            await context.bot.send_document(chat_id=update.effective_chat.id, document=bio, caption="📜 <b>Error Log</b>", parse_mode='HTML')
+            await query.answer("Log sent as file")
+        else:
+            await query.answer(f"Log: {log_text}", show_alert=True)
+    else:
+        await query.answer("✅ No errors recorded.", show_alert=True)
 
 async def bot_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    if query.data == "back_list":
+    data = query.data
+    
+    if data == "back_list":
         await query.delete_message()
         return
-    parts = query.data.split("_", 1)
-    action = parts[0]
-    token_prefix = parts[1] if len(parts) > 1 else ""
-    user_id = update.effective_user.id
-    bots = get_user_bots(user_id)
-    target = None
-    for bot in bots:
-        if bot['token'].startswith(token_prefix):
-            target = bot
-            break
-    if not target:
-        await query.edit_message_text("❌ Bot not found")
-        return
+        
+    action, prefix = data.split("_", 1)
+    
+    with get_db() as conn:
+        bot = conn.execute("SELECT * FROM bots WHERE token LIKE ?", (f"{prefix}%",)).fetchone()
+        
+    if not bot: return
+    
+    token = bot['token']
+    
     if action == "stop":
-        await query.edit_message_text("🛑 Stopping...")
-        success, msg = await stop_user_bot(target['token'])
-        result = "✅ Bot stopped!" if success else f"❌ Error: {msg}"
+        await stop_user_bot(token)
+        msg = "🛑 Stopped."
     elif action == "start":
-        await query.edit_message_text("▶️ Starting...")
-        success, msg = await start_user_bot(target['token'], target['file_path'])
-        result = "✅ Bot started!" if success else f"❌ Error: {msg}"
+        success, res = await start_user_bot(token, bot['file_path'])
+        msg = "✅ Started." if success else f"❌ Error: {res}"
     elif action == "restart":
-        await query.edit_message_text("🔄 Restarting...")
-        await stop_user_bot(target['token'])
+        await stop_user_bot(token)
         await asyncio.sleep(1)
-        success, msg = await start_user_bot(target['token'], target['file_path'])
-        result = "✅ Bot restarted!" if success else f"❌ Error: {msg}"
+        await start_user_bot(token, bot['file_path'])
+        msg = "🔄 Restarted."
     elif action == "delete":
-        await query.edit_message_text("🗑️ Deleting...")
-        await stop_user_bot(target['token'])
-        delete_bot_from_db(target['token'])
-        if os.path.exists(target['file_path']):
-            os.remove(target['file_path'])
-        result = "✅ Bot deleted!"
-    else:
-        result = "Unknown action"
-    await query.edit_message_text(result)
-
+        await stop_user_bot(token)
+        delete_bot_from_db(token)
+        if os.path.exists(bot['file_path']): os.remove(bot['file_path'])
+        msg = "🗑️ Deleted."
+        
+    await query.answer(msg)
+    await view_bot(update, context)
 
 # ==========================================
-# HELP
+# ADMIN PANEL
 # ==========================================
-async def help_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    help_text = (
-        "🆘 <b>Help Center</b>\n\n"
-        "<b>📤 Host My Bot</b>\n"
-        "Upload your existing Python bot code.\n\n"
-        "Requirements:\n"
-        "- Python file (.py only)\n"
-        "- Must have: <code>application = Application.builder().token(TOKEN).build()</code>\n"
-        "- No run_polling() or run_webhook()\n\n"
-        "<b>✨ Create New Bot</b>\n"
-        "Tell me what you want and I will create it!\n\n"
-        "- Describe your bot in any language\n"
-        "- Answer a few quick questions\n"
-        "- Get a working bot in seconds!\n\n"
-        "<b>📊 My Bots</b>\n"
-        "Manage your hosted bots:\n"
-        "- Start/Stop bots\n"
-        "- Restart bots\n"
-        "- Delete bots\n\n"
-        "<b>Need more help?</b>\n"
-        "Send your question below:"
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    stats = get_stats()
+    text = (
+        f"🔐 <b>Admin</b>\n"
+        f"Users: {stats['users']} | Bots: {stats['total_bots']}\n"
+        f"Active: {len(ACTIVE_BOTS)} | Blocked: {stats['blocked']}"
     )
-    await update.message.reply_text(help_text, reply_markup=back_kb(), parse_mode='HTML')
-    return HELP_GET_MESSAGE
+    kb = [
+        [InlineKeyboardButton("📜 List Bots", callback_data="admin_list"),
+         InlineKeyboardButton("📢 Broadcast", callback_data="admin_cast")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_panel")]
+    ]
+    func = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
+    await func(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
+async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    bots = get_all_bots_admin()[:20]
+    kb = []
+    for b in bots:
+        s = "🟢" if b['token'] in ACTIVE_BOTS else "🔴"
+        if b['is_blocked']: s = "🚫"
+        kb.append([InlineKeyboardButton(f"{s} @{b['bot_username']}", callback_data=f"abot_{b['token'][:10]}")])
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin_panel")])
+    await query.edit_message_text("📜 <b>Recent Bots</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
-async def help_get_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text
-    if "Back" in text or "Main Menu" in text or "🔙" in text or "🏠" in text:
-        return await go_back(update, context)
-    user = update.effective_user
-    try:
-        admin_text = (
-            f"🆘 <b>Support Request</b>\n\n"
-            f"👤 {esc(user.first_name)} (@{esc(user.username)})\n"
-            f"🆔 <code>{user.id}</code>\n\n"
-            f"📝 {esc(text)}"
-        )
-        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_text, parse_mode='HTML')
-        await update.message.reply_text(
-            "✅ Message sent! We will get back to you soon.",
-            reply_markup=main_menu_kb()
-        )
-    except Exception as e:
-        logger.error(f"Failed to send help message: {e}")
-        await update.message.reply_text(
-            "❌ Failed to send. Please try again.",
-            reply_markup=main_menu_kb()
-        )
+async def admin_bot_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    prefix = query.data.replace("abot_", "")
+    with get_db() as conn:
+        bot = conn.execute("SELECT * FROM bots WHERE token LIKE ?", (f"{prefix}%",)).fetchone()
+    
+    s = "Blocked" if bot['is_blocked'] else ("Running" if bot['token'] in ACTIVE_BOTS else "Stopped")
+    text = f"🤖 <b>@{bot['bot_username']}</b>\nUser: {bot['user_id']}\nState: {s}\nUpdates: {bot['update_count']}"
+    
+    blk = "Unblock" if bot['is_blocked'] else "Block"
+    kb = [
+        [InlineKeyboardButton(blk, callback_data=f"ablock_{prefix}"), InlineKeyboardButton("Delete", callback_data=f"adel_{prefix}")],
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_list")]
+    ]
+    await query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+
+async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    action, prefix = query.data.split("_", 1)
+    
+    with get_db() as conn:
+        bot = conn.execute("SELECT * FROM bots WHERE token LIKE ?", (f"{prefix}%",)).fetchone()
+        
+    if action == "ablock":
+        if toggle_bot_block(bot['token']):
+            await stop_user_bot(bot['token'])
+    elif action == "adel":
+        await stop_user_bot(bot['token'])
+        delete_bot_from_db(bot['token'])
+        
+    await admin_list(update, context)
+
+async def admin_broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("📢 Send broadcast message (/cancel to stop):")
+    return BROADCAST_MSG
+
+async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "/cancel":
+        await update.message.reply_text("Cancelled.", reply_markup=main_menu_kb())
+        return MAIN_MENU
+    
+    msg = await update.message.reply_text("⏳ Sending...")
+    with get_db() as conn:
+        users = conn.execute("SELECT user_id FROM users").fetchall()
+    
+    count = 0
+    for u in users:
+        try:
+            await context.bot.send_message(u[0], update.message.text)
+            count += 1
+            await asyncio.sleep(0.05)
+        except: pass
+        
+    await msg.edit_text(f"✅ Sent to {count} users.")
     return MAIN_MENU
 
-
 # ==========================================
-# ADMIN COMMANDS
+# SYSTEM HANDLERS
 # ==========================================
-async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    stats = get_stats()
-    active = len(ACTIVE_BOTS)
-    text = (
-        f"👑 <b>Admin Stats</b>\n\n"
-        f"👥 Users: {stats['users']}\n"
-        f"🤖 Total Bots: {stats['total_bots']}\n"
-        f"🟢 Active: {active}\n"
-        f"🔴 Inactive: {stats['total_bots'] - active}"
-    )
-    await update.message.reply_text(text, parse_mode='HTML')
+async def help_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("🆘 Type your message for admin:", reply_markup=back_kb())
+    return HELP_GET_MESSAGE
 
+async def help_send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await context.bot.send_message(ADMIN_ID, f"📩 <b>Support:</b>\n{update.message.text}\nFrom: {update.effective_user.id}", parse_mode='HTML')
+    await update.message.reply_text("✅ Sent.")
+    return MAIN_MENU
 
-async def admin_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    with get_db() as conn:
-        users = conn.execute("SELECT * FROM users ORDER BY joined_at DESC LIMIT 20").fetchall()
-    text = "👥 <b>Recent Users:</b>\n\n"
-    for u in users:
-        text += f"- {esc(u['first_name'])} (@{esc(u['username'])})\n"
-    await update.message.reply_text(text[:4000], parse_mode='HTML')
-
-
-async def admin_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    with get_db() as conn:
-        bots = conn.execute("SELECT * FROM bots ORDER BY created_at DESC LIMIT 20").fetchall()
-    text = "🤖 <b>Recent Bots:</b>\n\n"
-    for b in bots:
-        status = "🟢" if b['token'] in ACTIVE_BOTS else "🔴"
-        text += f"{status} @{esc(b['bot_username'] or 'Unknown')} (User: {b['user_id']})\n"
-    await update.message.reply_text(text[:4000], parse_mode='HTML')
-
-
-# ==========================================
-# ERROR HANDLER
-# ==========================================
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(f"Exception: {context.error}")
-    if update and hasattr(update, 'effective_chat') and update.effective_chat:
-        try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text="⚠️ An error occurred. Please try again or use /start to restart.",
-                reply_markup=main_menu_kb()
-            )
-        except:
-            pass
-
-
-# ==========================================
-# WEBHOOK
-# ==========================================
 async def webhook_handler(request):
     token = request.match_info.get('token')
     try:
         data = await request.json()
-    except:
-        return web.Response(status=400)
-    try:
-        if token == PLATFORM_BOT_TOKEN:
-            if platform_app:
-                update = Update.de_json(data, platform_app.bot)
-                await platform_app.process_update(update)
+        if token == PLATFORM_BOT_TOKEN and platform_app:
+            await platform_app.process_update(Update.de_json(data, platform_app.bot))
         elif token in ACTIVE_BOTS:
-            app = ACTIVE_BOTS[token]
-            update = Update.de_json(data, app.bot)
-            await app.process_update(update)
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-    return web.Response(text="OK")
+            # Check for blocked status efficiently
+            with get_db() as conn:
+                blocked = conn.execute("SELECT is_blocked FROM bots WHERE token = ?", (token,)).fetchone()
+            if blocked and blocked[0]: return web.Response(text="BLOCKED")
+            
+            increment_bot_update_count(token)
+            await ACTIVE_BOTS[token].process_update(Update.de_json(data, ACTIVE_BOTS[token].bot))
+        return web.Response(text="OK")
+    except: return web.Response(status=400)
 
-
-async def health_check(request):
-    return web.Response(text=f"OK - {len(ACTIVE_BOTS)} bots running")
-
-
-# ==========================================
-# STARTUP
-# ==========================================
 async def restore_bots():
-    logger.info("Restoring bots...")
     bots = get_all_running_bots()
-    count = 0
-    for token, path in bots:
-        if os.path.exists(path):
-            success, _ = await start_user_bot(token, path)
-            if success:
-                count += 1
-    logger.info(f"Restored {count}/{len(bots)} bots")
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data.clear()
-    await update.message.reply_text("❌ Cancelled", reply_markup=main_menu_kb())
-    return MAIN_MENU
-
+    logger.info(f"Restoring {len(bots)} bots...")
+    for t, p, b in bots:
+        if not b and os.path.exists(p): await start_user_bot(t, p)
 
 def main():
     global platform_app
     init_db()
-    logger.info("Starting Bot Hosting Platform...")
-    request = HTTPXRequest(connection_pool_size=8, connect_timeout=30.0, read_timeout=30.0)
-    platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(request).build()
-    platform_app.add_error_handler(error_handler)
+    
+    # Optimized Connection Pool
+    req = HTTPXRequest(connection_pool_size=20, connect_timeout=30.0, read_timeout=30.0)
+    platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(req).build()
+    
     conv = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘|🔙|🏠)"), handle_menu),
-        ],
+        entry_points=[CommandHandler("start", start), CommandHandler("admin", admin_panel), MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘)"), handle_menu)],
         states={
-            MAIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu)],
-            HOST_GET_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, host_get_token)],
+            MAIN_MENU: [MessageHandler(filters.TEXT, handle_menu)],
+            HOST_GET_TOKEN: [MessageHandler(filters.TEXT, host_get_token)],
             HOST_GET_FILE: [MessageHandler(filters.ALL, host_get_file)],
-            CREATE_GET_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_get_token)],
-            CREATE_GET_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, create_get_description)],
-            CREATE_COMMANDS_TYPE: [CallbackQueryHandler(create_commands_type, pattern=r"^cmd_")],
-            CREATE_CHAT_TYPE: [CallbackQueryHandler(create_chat_type, pattern=r"^chat_")],
-            CREATE_LANGUAGE: [CallbackQueryHandler(create_language, pattern=r"^lang_")],
-            CREATE_DATABASE: [CallbackQueryHandler(create_database, pattern=r"^db_")],
-            HELP_GET_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, help_get_message)],
+            CREATE_GET_TOKEN: [MessageHandler(filters.TEXT, create_get_token)],
+            CREATE_INITIAL_IDEA: [MessageHandler(filters.TEXT, create_initial_idea)],
+            CREATE_CONSULTATION: [
+                CallbackQueryHandler(create_handle_answer, pattern="^ans_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, create_handle_text_answer)
+            ],
+            HELP_GET_MESSAGE: [MessageHandler(filters.TEXT, help_send)],
+            BROADCAST_MSG: [MessageHandler(filters.TEXT, admin_broadcast_send)]
         },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
-        allow_reentry=True,
-        per_message=False,
+        fallbacks=[CommandHandler("start", start)]
     )
+    
     platform_app.add_handler(conv)
-    platform_app.add_handler(CommandHandler("stats", admin_stats))
-    platform_app.add_handler(CommandHandler("users", admin_users))
-    platform_app.add_handler(CommandHandler("bots", admin_bots))
-    platform_app.add_handler(CallbackQueryHandler(view_bot, pattern=r"^view_"))
-    platform_app.add_handler(CallbackQueryHandler(bot_action, pattern=r"^(stop|start|restart|delete|back)_?"))
-    web_app = web.Application()
-    web_app.router.add_post('/bot/{token}', webhook_handler)
-    web_app.router.add_get('/health', health_check)
-    web_app.router.add_get('/', health_check)
+    platform_app.add_handler(CallbackQueryHandler(admin_panel, pattern="^admin_panel"))
+    platform_app.add_handler(CallbackQueryHandler(admin_list, pattern="^admin_list"))
+    platform_app.add_handler(CallbackQueryHandler(admin_broadcast_start, pattern="^admin_cast"))
+    platform_app.add_handler(CallbackQueryHandler(admin_bot_view, pattern="^abot_"))
+    platform_app.add_handler(CallbackQueryHandler(admin_action, pattern="^(ablock|adel)_"))
+    platform_app.add_handler(CallbackQueryHandler(view_bot, pattern="^view_"))
+    platform_app.add_handler(CallbackQueryHandler(view_logs, pattern="^logs_"))
+    platform_app.add_handler(CallbackQueryHandler(bot_action, pattern="^(stop|start|restart|delete|back)_"))
+    
+    app = web.Application()
+    app.router.add_post('/bot/{token}', webhook_handler)
+    app.router.add_get('/', lambda r: web.Response(text="Running"))
+    
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-
-    async def run():
+    
+    async def runner():
         await platform_app.initialize()
         await platform_app.start()
         await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
-        logger.info("Webhook set!")
         await restore_bots()
-        runner = web.AppRunner(web_app)
-        await runner.setup()
-        port = int(os.environ.get("PORT", 8080))
-        await web.TCPSite(runner, '0.0.0.0', port).start()
-        logger.info(f"Server running on port {port}")
+        
+        server = web.AppRunner(app)
+        await server.setup()
+        await web.TCPSite(server, '0.0.0.0', int(os.environ.get("PORT", 8080))).start()
         await asyncio.Event().wait()
-
-    try:
-        loop.run_until_complete(run())
-    except KeyboardInterrupt:
-        pass
-
+        
+    try: loop.run_until_complete(runner())
+    except KeyboardInterrupt: pass
 
 if __name__ == "__main__":
     main()
