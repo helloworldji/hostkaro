@@ -9,6 +9,7 @@ import subprocess
 import ast
 import re
 import json
+import time  # <--- Added for sleep
 from datetime import datetime
 from aiohttp import web, ClientSession
 
@@ -38,7 +39,6 @@ PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-# Set higher logging level for httpx to reduce noise
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -457,21 +457,36 @@ async def restore_bots():
         else:
             logger.warning(f"File missing for bot {token}")
 
+async def safe_start_application(app, max_retries=10):
+    """Tries to start the bot with retries on Timeout."""
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempting to connect to Telegram (Try {attempt+1}/{max_retries})...")
+            await app.initialize()
+            await app.start()
+            logger.info("✅ Connected to Telegram successfully!")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Connection failed: {e}")
+            logger.info("Waiting 5 seconds before retry...")
+            await asyncio.sleep(5) # Wait for network to stabilize
+    return False
+
 def main():
     global platform_app
 
     # 1. Initialize DB
     init_db()
 
-    # 2. Build Platform Bot with AGGRESSIVE NETWORK SETTINGS
-    # FIX: Use HTTP/1.1 and 60s timeout to prevent Render ConnectTimeout
+    # 2. Build Platform Bot with MAX RELIABILITY SETTINGS
+    # FIX: 120s timeout, HTTP/1.1, and small pool to prevent congestion
     trequest = HTTPXRequest(
-        connection_pool_size=20,
-        connect_timeout=60.0, 
-        read_timeout=60.0, 
-        write_timeout=60.0,
-        pool_timeout=60.0,
-        http_version="1.1"  # <--- FORCE HTTP 1.1 (Stable)
+        connection_pool_size=4,   # Reduced from 20 to 4 (Render specific fix)
+        connect_timeout=120.0,    # Increased to 2 minutes
+        read_timeout=120.0, 
+        write_timeout=120.0,
+        pool_timeout=120.0,
+        http_version="1.1"        # Force HTTP 1.1
     )
     
     platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(trequest).build()
@@ -496,44 +511,41 @@ def main():
     platform_app.add_handler(CommandHandler("stats", admin_stats))
     platform_app.add_handler(conv_handler)
 
-    # 4. Setup Aiohttp Web Server (Custom Webhook Logic)
+    # 4. Setup Aiohttp Web Server
     app = web.Application()
-    app.router.add_post('/bot/{token}', webhook_handler) # Handles main bot AND user bots
-    app.router.add_get('/', health_check) # For UptimeRobot
+    app.router.add_post('/bot/{token}', webhook_handler)
+    app.router.add_get('/', health_check)
 
     # 5. Run Everything
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     async def runner():
-        # Initialize Platform Bot
-        try:
-            logger.info("Initializing platform bot...")
-            await platform_app.initialize()
-            await platform_app.start()
-            
-            # Set webhook for the main platform bot
-            logger.info("Setting webhook...")
-            await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
-            
-            # Restore user bots
-            await restore_bots()
-            
-            # Start Web Server
-            logger.info("Starting web server...")
-            runner = web.AppRunner(app)
-            await runner.setup()
-            port = int(os.environ.get("PORT", 8080))
-            site = web.TCPSite(runner, '0.0.0.0', port)
-            await site.start()
-            
-            logger.info(f"🌍 Server running on port {port}")
-            
-            # Keep alive
-            await asyncio.Event().wait()
-        except Exception as e:
-            logger.error(f"FATAL ERROR: {e}")
+        # Initialize Platform Bot (WITH RETRY LOOP)
+        success = await safe_start_application(platform_app)
+        if not success:
+            logger.error("❌ Could not connect to Telegram after multiple retries. Exiting.")
             sys.exit(1)
+            
+        # Set webhook for the main platform bot
+        logger.info("Setting webhook...")
+        await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
+        
+        # Restore user bots
+        await restore_bots()
+        
+        # Start Web Server
+        logger.info("Starting web server...")
+        runner = web.AppRunner(app)
+        await runner.setup()
+        port = int(os.environ.get("PORT", 8080))
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        
+        logger.info(f"🌍 Server running on port {port}")
+        
+        # Keep alive
+        await asyncio.Event().wait()
 
     try:
         loop.run_until_complete(runner())
