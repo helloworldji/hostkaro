@@ -13,7 +13,8 @@ from datetime import datetime
 from aiohttp import web, ClientSession
 
 # Telegram Imports
-from telegram import Update, BotCommand
+# FIXED: Added ReplyKeyboardMarkup to imports
+from telegram import Update, BotCommand, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -247,7 +248,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 Hi {user.first_name}! Welcome to the **Free Bot Hosting Platform**.\n\n"
         "I can host your Python Telegram bots 24/7 on this server.\n\n"
         "👇 **Choose an option:**",
-        reply_markup=filters.ReplyKeyboardMarkup(
+        # FIXED: Removed 'filters.' prefix here
+        reply_markup=ReplyKeyboardMarkup(
             [["📤 Host Existing Bot", "✨ Create Bot (AI)"], ["📊 My Bots", "🆘 Help"]],
             resize_keyboard=True
         )
@@ -466,8 +468,9 @@ def main():
     # 3. Add Handlers
     conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex("^📤 Host Existing Bot$"), host_start),
-            MessageHandler(filters.Regex("^✨ Create Bot \(AI\)$"), create_ai_start),
+            # FIXED: Used raw strings r"..." to fix SyntaxWarning
+            MessageHandler(filters.Regex(r"^📤 Host Existing Bot$"), host_start),
+            MessageHandler(filters.Regex(r"^✨ Create Bot \(AI\)$"), create_ai_start),
         ],
         states={
             GET_TOKEN_UPLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_token_upload)],
@@ -479,7 +482,7 @@ def main():
     )
 
     platform_app.add_handler(CommandHandler("start", start))
-    platform_app.add_handler(MessageHandler(filters.Regex("^📊 My Bots$"), my_bots))
+    platform_app.add_handler(MessageHandler(filters.Regex(r"^📊 My Bots$"), my_bots))
     platform_app.add_handler(CommandHandler("stats", admin_stats))
     platform_app.add_handler(conv_handler)
 
