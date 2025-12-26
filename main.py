@@ -41,9 +41,8 @@ from telegram.ext import (
 # CONFIGURATION
 # ==========================================
 ADMIN_ID = 8175884349
-DEEPSEEK_API_KEY = "sk-d0522e698322494db0196cdfbdecca05"
-DEEPSEEK_MODEL = "deepseek-coder"
-DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1/chat/completions"
+GEMINI_API_KEY = "AIzaSyCE1ZG6R3yMF-95UNO0dlEjBFI4GtEOXOc"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
 
@@ -338,7 +337,7 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# DEEPSEEK BOT CODE GENERATOR
+# GEMINI BOT CODE GENERATOR
 # ==========================================
 async def generate_bot_code(
     description: str,
@@ -349,6 +348,7 @@ async def generate_bot_code(
     language: str = "English",
     use_database: bool = False
 ) -> Tuple[Optional[str], Optional[str]]:
+    
     features = []
     if use_commands:
         features.append("slash commands (/start, /help, custom commands)")
@@ -356,81 +356,96 @@ async def generate_bot_code(
         features.append("inline keyboard buttons")
     if use_database:
         features.append("SQLite database for user data")
+    
     chat_desc = {
         "private": "private chats only",
         "groups": "group chats only",
         "both": "private and group chats"
     }.get(chat_type, "both")
     
-    system_prompt = """You are an expert Python developer specializing in Telegram bots. 
-Generate complete, production-ready Python code for Telegram bots using python-telegram-bot library version 20+.
+    prompt = f"""You are an expert Python developer specializing in Telegram bots.
+Generate complete, production-ready Python code for a Telegram bot using python-telegram-bot library version 20+.
 
 CRITICAL RULES:
 1. Use python-telegram-bot library version 20+ (async version)
-2. Define a global variable: application = Application.builder().token("TOKEN").build()
+2. Define a global variable at the end: application = Application.builder().token("{token}").build()
 3. DO NOT include application.run_polling() or application.run_webhook() at the end
 4. All handlers must be async (async def)
 5. Include proper error handling with try/except
-6. Add logging
-7. Return ONLY raw Python code - no markdown, no explanations, no ``` blocks"""
+6. Add logging at the top
+7. Return ONLY raw Python code - no markdown, no explanations, no ``` blocks
+8. The code must be complete and ready to run
 
-    user_prompt = f"""Create a Telegram bot with these specifications:
-
-BOT TOKEN: {token}
-
-DESCRIPTION: {description}
-
-REQUIREMENTS:
+BOT REQUIREMENTS:
+- Token: {token}
+- Description: {description}
 - Response language: {language}
 - Target chat type: {chat_desc}
 - Features: {', '.join(features) if features else 'basic commands'}
 - Must include /start and /help commands
-- Must define 'application' variable at the end
 
-Generate complete working Python code only. No explanations."""
+Generate the complete Python code now:"""
 
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "X-goog-api-key": GEMINI_API_KEY
     }
+    
     payload = {
-        "model": DEEPSEEK_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
         ],
-        "temperature": 0.7,
-        "max_tokens": 4096,
-        "stream": False
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 8192
+        }
     }
+    
     try:
-        async with ClientSession(timeout=ClientTimeout(total=90)) as session:
-            async with session.post(DEEPSEEK_BASE_URL, json=payload, headers=headers) as resp:
+        async with ClientSession(timeout=ClientTimeout(total=60)) as session:
+            async with session.post(GEMINI_API_URL, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    logger.error(f"DeepSeek API error: {resp.status} - {error_text}")
+                    logger.error(f"Gemini API error: {resp.status} - {error_text}")
                     return None, f"Generation failed (Error {resp.status})"
+                
                 result = await resp.json()
+                
                 try:
-                    content = result['choices'][0]['message']['content']
+                    # Extract text from Gemini response
+                    content = result['candidates'][0]['content']['parts'][0]['text']
                     code = content.strip()
+                    
+                    # Clean up markdown if present
                     code = re.sub(r'^```python\s*\n?', '', code)
                     code = re.sub(r'^```\s*\n?', '', code)
                     code = re.sub(r'\n?```$', '', code)
                     code = code.strip()
+                    
+                    # Validate syntax
                     valid, error = validate_python_code(code)
                     if not valid:
                         return None, f"Generated code error: {error}"
+                    
+                    # Check for application variable
                     if 'application' not in code:
                         return None, "Generation failed - missing application variable"
+                    
                     return code, None
+                    
                 except (KeyError, IndexError) as e:
-                    logger.error(f"Failed to parse DeepSeek response: {e}")
+                    logger.error(f"Failed to parse Gemini response: {e}")
+                    logger.error(f"Response: {result}")
                     return None, "Failed to parse response"
+                    
     except asyncio.TimeoutError:
         return None, "Request timed out. Please try again."
     except Exception as e:
-        logger.error(f"DeepSeek API exception: {e}")
+        logger.error(f"Gemini API exception: {e}")
         return None, str(e)
 
 
@@ -739,7 +754,7 @@ async def create_database(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     context.user_data['create']['use_database'] = query.data == "db_yes"
     await query.edit_message_text(
-        "🔄 <b>Generating your bot...</b>\n\nThis may take 15-45 seconds.\nPlease wait...",
+        "🔄 <b>Generating your bot with Gemini...</b>\n\nThis may take 10-30 seconds.\nPlease wait...",
         parse_mode='HTML'
     )
     data = context.user_data['create']
