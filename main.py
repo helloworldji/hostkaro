@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - V4.2 (FIXED CONTEXT ERROR & SHARED API)
+TELEGRAM BOT HOSTING PLATFORM - PRODUCTION FINAL (v5.0)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -41,7 +41,7 @@ from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    ContextTypes, # <--- KEY FIX
+    ContextTypes,
     filters,
     ConversationHandler,
     CallbackQueryHandler,
@@ -127,6 +127,7 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
+    # Migrations for existing DBs
     try:
         c.execute("SELECT is_blocked FROM bots LIMIT 1")
     except sqlite3.OperationalError:
@@ -232,7 +233,7 @@ def get_stats():
 # VALIDATION
 # ==========================================
 def validate_python_code(code: str) -> Tuple[bool, str]:
-    # Basic syntax check
+    # Only checks syntax. Does NOT block imports.
     try:
         ast.parse(code)
     except SyntaxError as e:
@@ -268,6 +269,8 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'pathlib', 'io', 'hashlib', 'base64', 'urllib', 'http', 'html',
         'sqlite3', 'pickle', 'copy', 'threading', 'contextlib', 'string'
     }
+    
+    # CRITICAL MAP: Ensures 'google' import installs the correct package
     package_map = {
         'telegram': 'python-telegram-bot',
         'PIL': 'Pillow',
@@ -277,8 +280,10 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'bs4': 'beautifulsoup4',
         'requests': 'requests',
         'numpy': 'numpy',
-        'google.generativeai': 'google-generativeai' # Support for AI bots
+        'google': 'google-generativeai', 
+        'google.generativeai': 'google-generativeai'
     }
+    
     to_install = []
     for lib in imports:
         if lib in stdlib: continue
@@ -287,6 +292,7 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
             importlib.metadata.version(pkg.split('>=')[0].split('==')[0])
         except importlib.metadata.PackageNotFoundError:
             to_install.append(pkg)
+            
     if to_install:
         try:
             logger.info(f"Installing: {to_install}")
@@ -343,7 +349,7 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
             
         user_app = module.application
         
-        # Test Connection
+        # Connection Test
         try:
             me = await user_app.bot.get_me()
             logger.info(f"Bot connected: @{me.username}")
@@ -353,6 +359,7 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
         await user_app.initialize()
         await user_app.start()
         
+        # Webhook Setup
         webhook_url = f"{RENDER_EXTERNAL_URL}/bot/{token}"
         try:
             await user_app.bot.set_webhook(url=webhook_url)
@@ -387,7 +394,7 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# NON-TECHNICAL AI ENGINE (FIXED)
+# NON-TECHNICAL AI ENGINE
 # ==========================================
 async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
@@ -418,14 +425,13 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
 async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], Optional[str]]:
     if not GEMINI_API_KEY: return None, "API Key missing"
 
-    # INJECTED API KEY FOR USER BOTS
     prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot.
     
     DESCRIPTION: {summary}
     TOKEN: {token}
     
     CRITICAL TECHNICAL RULES:
-    1. Use 'ContextTypes.DEFAULT_TYPE' for type hinting. NEVER use 'CallbackContext'.
+    1. Use 'ContextTypes.DEFAULT_TYPE'. NEVER use 'CallbackContext'.
     2. Define global variable: application = Application.builder().token("{token}").build()
     3. Register all handlers IMMEDIATELY after creating 'application'.
     4. DO NOT wrap handler registration in 'if __name__ == "__main__":'
@@ -433,7 +439,7 @@ async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], 
     6. Return ONLY raw Python code.
     
     SPECIAL RULE:
-    If the user wants an AI/Chatbot, use the 'google.generativeai' library.
+    If the user wants an AI/Chatbot, use 'google.generativeai'.
     Use this API Key: "{GEMINI_API_KEY}"
     """
     
@@ -561,7 +567,7 @@ async def host_get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     success, res = await start_user_bot(token, file_path)
     
     if success:
-        await msg.edit_text(f"🚀 <b>Bot Deployed!</b>\n\n@{context.user_data.get('bot_username')}\nRunning: 🟢", parse_mode='HTML')
+        await msg.edit_text(f"🚀 <b>Bot Deployed!</b>\n\n@{context.user_data.get('bot_username')}", parse_mode='HTML')
     else:
         await msg.edit_text(f"❌ Failed: {res}")
     return MAIN_MENU
