@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - ULTIMATE EDITION (v3.6 - STABLE GEMINI)
+TELEGRAM BOT HOSTING PLATFORM - SECURE EDITION (v3.7)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -22,6 +22,9 @@ from contextlib import contextmanager
 from typing import Optional, Tuple, Dict, List, Any
 from io import BytesIO
 
+# NEW IMPORT FOR ENV VARIABLES
+from dotenv import load_dotenv
+
 from aiohttp import web, ClientSession, ClientTimeout
 from telegram import (
     Update,
@@ -43,13 +46,25 @@ from telegram.ext import (
 from telegram.error import Forbidden, BadRequest
 
 # ==========================================
-# CONFIGURATION
+# CONFIGURATION (SECURE)
 # ==========================================
+# Load environment variables from .env file (for local testing)
+load_dotenv()
+
 ADMIN_ID = 8175884349
-GEMINI_API_KEY = "AIzaSyDyX6GaLo1DGGiPA_TYLVMh0OwZ32ntmY8"
+
+# SECURE: Read from Environment Variable. 
+# IF THIS CRASHES, YOU FORGOT TO ADD THE KEY IN RENDER DASHBOARD!
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
+
+# Check if key exists to prevent silent failures
+if not GEMINI_API_KEY:
+    print("CRITICAL ERROR: GEMINI_API_KEY is missing from Environment Variables!")
+    # We do not exit here to allow the bot to start, but AI features won't work.
 
 # ==========================================
 # LOGGING
@@ -226,7 +241,7 @@ def get_stats():
 def validate_python_code(code: str) -> Tuple[bool, str]:
     forbidden = [
         'os.environ', 'sys.modules', 'platform_app', 'GEMINI_API_KEY', 
-        'PLATFORM_BOT_TOKEN', 'ADMIN_ID', 'import os', 'from os'
+        'PLATFORM_BOT_TOKEN', 'ADMIN_ID', 'import os', 'from os', 'dotenv'
     ]
     for bad in forbidden:
         if bad in code:
@@ -368,9 +383,12 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# NON-TECHNICAL AI ENGINE (FIXED)
+# NON-TECHNICAL AI ENGINE (SECURE)
 # ==========================================
 async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
+    if not GEMINI_API_KEY:
+        return {"question": "System Error: API Key missing in Settings.", "options": ["Contact Admin"], "refined_summary": current_info}
+
     prompt = f"""You are a helpful, non-technical Product Manager helping a user create a Telegram bot.
     
     Current Idea: {current_info}
@@ -391,7 +409,6 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
     
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
     
-    # SAFETY SETTINGS ADDED TO PREVENT BLOCKS
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": { "responseMimeType": "application/json" },
@@ -411,10 +428,7 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
                     return {"question": "I'm ready to build. Proceed?", "options": ["Yes, Build it"], "refined_summary": current_info}
                 
                 result = await resp.json()
-                
-                # Robust Error Handling
                 if 'candidates' not in result or not result['candidates']:
-                    logger.error(f"Gemini Empty Response: {result}")
                     return {"question": "I have enough info. Build now?", "options": ["Build Now"], "refined_summary": current_info}
                     
                 text = result['candidates'][0]['content']['parts'][0]['text']
@@ -424,6 +438,9 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
         return {"question": "Ready to build?", "options": ["Build Now"], "refined_summary": current_info}
 
 async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], Optional[str]]:
+    if not GEMINI_API_KEY:
+        return None, "System Error: Admin needs to add GEMINI_API_KEY in Render Dashboard."
+
     prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot based on this description.
     
     DESCRIPTION: {summary}
@@ -439,7 +456,6 @@ async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], 
     
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
     
-    # SAFETY SETTINGS ADDED
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": { "temperature": 0.5 },
