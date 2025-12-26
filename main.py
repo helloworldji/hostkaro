@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - PRODUCTION EDITION (v3.8)
+TELEGRAM BOT HOSTING PLATFORM - UNRESTRICTED EDITION (v3.9)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -25,13 +25,10 @@ from io import BytesIO
 # ==========================================
 # SAFE IMPORT FOR DOTENV
 # ==========================================
-# This prevents the "ModuleNotFoundError" crash on Render
 try:
     from dotenv import load_dotenv
 except ImportError:
-    # If the library is missing, define a dummy function so code doesn't break
-    def load_dotenv():
-        pass
+    def load_dotenv(): pass
 
 from aiohttp import web, ClientSession, ClientTimeout
 from telegram import (
@@ -56,14 +53,10 @@ from telegram.error import Forbidden, BadRequest
 # ==========================================
 # CONFIGURATION
 # ==========================================
-# Load environment variables (only does something if .env exists)
 load_dotenv()
 
 ADMIN_ID = 8175884349
-
-# SECURE: Read API Key from Render Environment Variables
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
@@ -238,16 +231,13 @@ def get_stats():
 
 
 # ==========================================
-# SECURITY & VALIDATION
+# VALIDATION (RESTRICTIONS REMOVED)
 # ==========================================
 def validate_python_code(code: str) -> Tuple[bool, str]:
-    forbidden = [
-        'os.environ', 'sys.modules', 'platform_app', 'GEMINI_API_KEY', 
-        'PLATFORM_BOT_TOKEN', 'ADMIN_ID', 'import os', 'from os', 'dotenv'
-    ]
-    for bad in forbidden:
-        if bad in code:
-            return False, f"Security Violation: '{bad}' is not allowed."
+    """
+    Checks syntax ONLY.
+    WARNING: Keyword blocking has been removed.
+    """
     try:
         ast.parse(code)
     except SyntaxError as e:
@@ -385,7 +375,7 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# NON-TECHNICAL AI ENGINE (SECURE)
+# NON-TECHNICAL AI ENGINE
 # ==========================================
 async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
