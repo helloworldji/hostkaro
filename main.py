@@ -14,7 +14,7 @@ from aiohttp import web, ClientSession
 
 # Telegram Imports
 from telegram import Update, BotCommand, ReplyKeyboardMarkup
-from telegram.request import HTTPXRequest  # <--- NEW IMPORT FOR TIMEOUT FIX
+from telegram.request import HTTPXRequest
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -26,7 +26,7 @@ from telegram.ext import (
 )
 
 # ==========================================
-# ⚙️ CONFIGURATION (HARDCODED)
+# ⚙️ CONFIGURATION
 # ==========================================
 ADMIN_ID = 8175884349
 DEEPSEEK_API_KEY = "sk-d0522e698322494db0196cdfbdecca05"
@@ -38,6 +38,8 @@ PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# Set higher logging level for httpx to reduce noise
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Global State
@@ -461,9 +463,16 @@ def main():
     # 1. Initialize DB
     init_db()
 
-    # 2. Build Platform Bot with CUSTOM REQUEST TIMEOUTS
-    # This prevents the "TimedOut" error on Render
-    trequest = HTTPXRequest(connection_pool_size=8, connect_timeout=30.0, read_timeout=30.0)
+    # 2. Build Platform Bot with AGGRESSIVE NETWORK SETTINGS
+    # FIX: Use HTTP/1.1 and 60s timeout to prevent Render ConnectTimeout
+    trequest = HTTPXRequest(
+        connection_pool_size=20,
+        connect_timeout=60.0, 
+        read_timeout=60.0, 
+        write_timeout=60.0,
+        pool_timeout=60.0,
+        http_version="1.1"  # <--- FORCE HTTP 1.1 (Stable)
+    )
     
     platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(trequest).build()
 
@@ -498,26 +507,33 @@ def main():
     
     async def runner():
         # Initialize Platform Bot
-        await platform_app.initialize()
-        await platform_app.start()
-        
-        # Set webhook for the main platform bot
-        await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
-        
-        # Restore user bots
-        await restore_bots()
-        
-        # Start Web Server
-        runner = web.AppRunner(app)
-        await runner.setup()
-        port = int(os.environ.get("PORT", 8080))
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        
-        logger.info(f"🌍 Server running on port {port}")
-        
-        # Keep alive
-        await asyncio.Event().wait()
+        try:
+            logger.info("Initializing platform bot...")
+            await platform_app.initialize()
+            await platform_app.start()
+            
+            # Set webhook for the main platform bot
+            logger.info("Setting webhook...")
+            await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
+            
+            # Restore user bots
+            await restore_bots()
+            
+            # Start Web Server
+            logger.info("Starting web server...")
+            runner = web.AppRunner(app)
+            await runner.setup()
+            port = int(os.environ.get("PORT", 8080))
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            
+            logger.info(f"🌍 Server running on port {port}")
+            
+            # Keep alive
+            await asyncio.Event().wait()
+        except Exception as e:
+            logger.error(f"FATAL ERROR: {e}")
+            sys.exit(1)
 
     try:
         loop.run_until_complete(runner())
