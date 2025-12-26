@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - VERIFIED EDITION (v4.1)
+TELEGRAM BOT HOSTING PLATFORM - V4.2 (FIXED CONTEXT ERROR & SHARED API)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -22,9 +22,7 @@ from contextlib import contextmanager
 from typing import Optional, Tuple, Dict, List, Any
 from io import BytesIO
 
-# ==========================================
 # SAFE IMPORT FOR DOTENV
-# ==========================================
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -43,12 +41,12 @@ from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
+    ContextTypes, # <--- KEY FIX
     filters,
     ConversationHandler,
     CallbackQueryHandler,
 )
-from telegram.error import Forbidden, BadRequest, InvalidToken
+from telegram.error import Forbidden, BadRequest
 
 # ==========================================
 # CONFIGURATION
@@ -59,8 +57,6 @@ ADMIN_ID = 8175884349
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
-
-# AUTO-DETECT RENDER URL (Fallback if env var missing)
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://hostkaro.onrender.com")
 
 # ==========================================
@@ -236,7 +232,7 @@ def get_stats():
 # VALIDATION
 # ==========================================
 def validate_python_code(code: str) -> Tuple[bool, str]:
-    # Basic syntax check only
+    # Basic syntax check
     try:
         ast.parse(code)
     except SyntaxError as e:
@@ -280,7 +276,8 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'yaml': 'pyyaml',
         'bs4': 'beautifulsoup4',
         'requests': 'requests',
-        'numpy': 'numpy'
+        'numpy': 'numpy',
+        'google.generativeai': 'google-generativeai' # Support for AI bots
     }
     to_install = []
     for lib in imports:
@@ -346,30 +343,26 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
             
         user_app = module.application
         
-        # --- VERIFICATION STEP 1: TEST CONNECTION ---
+        # Test Connection
         try:
-            # We try to fetch bot info. If this fails, the token is bad or blocked.
             me = await user_app.bot.get_me()
             logger.info(f"Bot connected: @{me.username}")
         except Exception as conn_err:
             return False, f"Connection Failed: {conn_err}"
 
-        # --- VERIFICATION STEP 2: START APP ---
         await user_app.initialize()
         await user_app.start()
         
-        # --- VERIFICATION STEP 3: SET WEBHOOK ---
         webhook_url = f"{RENDER_EXTERNAL_URL}/bot/{token}"
         try:
             await user_app.bot.set_webhook(url=webhook_url)
-            logger.info(f"Webhook set: {webhook_url}")
         except Exception as wh_err:
             return False, f"Webhook Failed: {wh_err}"
         
         ACTIVE_BOTS[token] = user_app
         update_bot_status(token, "running")
+        logger.info(f"Started bot: {token[:15]}...")
         return True, "Bot started successfully"
-        
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)[:100]}"
         logger.error(f"Failed to start bot: {error_msg}")
@@ -394,7 +387,7 @@ async def stop_user_bot(token: str) -> Tuple[bool, str]:
 
 
 # ==========================================
-# NON-TECHNICAL AI ENGINE (FIXED PROMPT)
+# NON-TECHNICAL AI ENGINE (FIXED)
 # ==========================================
 async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict[str, Any]:
     if not GEMINI_API_KEY:
@@ -425,17 +418,23 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
 async def generate_final_code(summary: str, token: str) -> Tuple[Optional[str], Optional[str]]:
     if not GEMINI_API_KEY: return None, "API Key missing"
 
+    # INJECTED API KEY FOR USER BOTS
     prompt = f"""You are an expert Python developer. Generate a complete, production-ready Telegram bot.
     
     DESCRIPTION: {summary}
     TOKEN: {token}
     
     CRITICAL TECHNICAL RULES:
-    1. Define global variable: application = Application.builder().token("{token}").build()
-    2. Register all handlers IMMEDIATELY after creating 'application'.
-    3. DO NOT wrap handler registration in 'if __name__ == "__main__":'
-    4. DO NOT use application.run_polling() or run_webhook().
-    5. Return ONLY raw Python code.
+    1. Use 'ContextTypes.DEFAULT_TYPE' for type hinting. NEVER use 'CallbackContext'.
+    2. Define global variable: application = Application.builder().token("{token}").build()
+    3. Register all handlers IMMEDIATELY after creating 'application'.
+    4. DO NOT wrap handler registration in 'if __name__ == "__main__":'
+    5. DO NOT use application.run_polling() or run_webhook().
+    6. Return ONLY raw Python code.
+    
+    SPECIAL RULE:
+    If the user wants an AI/Chatbot, use the 'google.generativeai' library.
+    Use this API Key: "{GEMINI_API_KEY}"
     """
     
     headers = { "Content-Type": "application/json", "X-goog-api-key": GEMINI_API_KEY }
@@ -675,7 +674,7 @@ async def start_build_process(update: Update, context: ContextTypes.DEFAULT_TYPE
     success, res = await start_user_bot(token, file_path)
     
     if success:
-        await msg.edit_text(f"🎉 <b>Bot Launched!</b>\n\n🤖 @{data['username']}\nStatus: 🟢 Online\n\nTry sending /start to it!", parse_mode='HTML')
+        await msg.edit_text(f"🎉 <b>Bot Launched!</b>\n\n🤖 @{data['username']}\nStatus: 🟢 Online", parse_mode='HTML')
     else:
         await msg.edit_text(f"❌ Deployment Error: {res}")
 
@@ -854,7 +853,11 @@ def main():
     platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(req).build()
     
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start), CommandHandler("admin", admin_panel), MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘|🔐)"), handle_menu)],
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("admin", admin_panel),
+            MessageHandler(filters.Regex(r"^(📤|✨|📊|🆘|🔐)"), handle_menu)
+        ],
         states={
             MAIN_MENU: [MessageHandler(filters.TEXT, handle_menu)],
             HOST_GET_TOKEN: [MessageHandler(filters.TEXT, host_get_token)],
