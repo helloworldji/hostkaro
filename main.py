@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - NON-TECHNICAL EDITION (v3.4)
+TELEGRAM BOT HOSTING PLATFORM - ULTIMATE EDITION (v3.5 - CRASH FIXES)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -377,7 +377,7 @@ async def consult_gemini_analyst(current_info: str, history: List[Dict]) -> Dict
     History: {json.dumps(history)}
     
     RULES:
-    1. Ask ONE simple question to clarify the user's idea (e.g., "What should the welcome message say?", "Should it send a picture?", "What buttons do you want?").
+    1. Ask ONE simple question to clarify the user's idea.
     2. DO NOT ask about databases, APIs, code, hosting, or tokens.
     3. Keep it simple and friendly.
     
@@ -840,8 +840,17 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📢 Broadcast", callback_data="admin_cast")],
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin_panel")]
     ]
-    func = update.callback_query.edit_message_text if update.callback_query else update.message.reply_text
-    await func(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+    
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
+        except BadRequest as e:
+            if "Message is not modified" in str(e):
+                await update.callback_query.answer("Stats are already up to date!")
+            else:
+                logger.error(f"Admin panel error: {e}")
+    else:
+        await update.message.reply_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(kb))
 
 async def admin_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
