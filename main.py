@@ -30,8 +30,7 @@ from telegram.ext import (
 # ⚙️ CONFIGURATION
 # ==========================================
 ADMIN_ID = 8175884349
-# 👇 UPDATED API KEY BELOW
-DEEPSEEK_API_KEY = "sk-3ff887b3eab042c9a3294fd3d62c8d80"
+GEMINI_API_KEY = "AIzaSyCE1ZG6R3yMF-95UNO0dlEjBFI4GtEOXOc"
 RENDER_EXTERNAL_URL = "https://hostkaro.onrender.com"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
 # ==========================================
@@ -58,7 +57,7 @@ os.makedirs(BOTS_DIR, exist_ok=True)
     GET_FILE_UPLOAD,
     GET_TOKEN_AI,
     GET_DESC_AI,
-    CONFIRM_AI,
+    GET_HELP_MESSAGE,
 ) = range(6)
 
 
@@ -90,14 +89,13 @@ def get_db_connection():
 
 
 # ==========================================
-# 🧠 AI GENERATION LOGIC (DEEPSEEK)
+# 🧠 AI GENERATION LOGIC (GEMINI)
 # ==========================================
 async def generate_bot_code(description, token):
-    """Generates Python code for a Telegram bot using DeepSeek API."""
-    if not DEEPSEEK_API_KEY:
+    if not GEMINI_API_KEY:
         return None, "System Error: AI API Key not configured."
 
-    url = "https://api.deepseek.com/chat/completions"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
     
     system_prompt = f"""
     You are a Senior Python DevOps Engineer. Write a COMPLETE, production-ready Telegram Bot.
@@ -109,54 +107,47 @@ async def generate_bot_code(description, token):
     4. DO NOT include `application.run_polling()` or `application.run_webhook()` at the end. The hosting platform handles execution.
     5. Include 3-4 useful features based on the description: "{description}".
     6. Use `async def` for all handlers.
-    7. Return ONLY the raw Python code. No markdown backticks. No explanations.
+    7. Return ONLY the raw Python code. Do not start with ```python or markdown. Just the code.
     8. Imports must be standard or common (requests, numpy, etc.).
     """
 
     payload = {
-        "model": "deepseek-coder",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Create a bot that does: {description}"}
-        ],
-        "temperature": 0.7,
-        "stream": False
+        "contents": [{
+            "parts": [{"text": f"{system_prompt}\n\nUser Request: Create a bot that does: {description}"}]
+        }]
     }
     
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Content-Type": "application/json"}
 
     try:
         async with ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     error_text = await resp.text()
-                    logger.error(f"DeepSeek Error: {error_text}")
-                    return None, f"DeepSeek API Error: {resp.status}"
+                    logger.error(f"Gemini Error: {error_text}")
+                    return None, f"Gemini API Error: {resp.status}"
                 
                 result = await resp.json()
-                content = result['choices'][0]['message']['content']
-                
-                # Cleanup code blocks
-                code = content.replace("```python", "").replace("```", "").strip()
-                return code, None
+                try:
+                    content = result['candidates'][0]['content']['parts'][0]['text']
+                    code = content.replace("```python", "").replace("```", "").strip()
+                    return code, None
+                except (KeyError, IndexError):
+                    return None, "Failed to parse AI response."
     except Exception as e:
         logger.error(f"AI Generation Exception: {e}")
         return None, str(e)
 
 
 # ==========================================
-# ⚙️ BOT MANAGER (The Core Engine)
+# ⚙️ BOT MANAGER
 # ==========================================
 async def install_dependencies(file_path):
-    """Scans code for imports and installs missing ones."""
     with open(file_path, "r", encoding="utf-8") as f:
         try:
             tree = ast.parse(f.read())
         except SyntaxError:
-            return # Let the runtime fail later if syntax is bad
+            return
 
     imports = set()
     for node in ast.walk(tree):
@@ -167,7 +158,6 @@ async def install_dependencies(file_path):
             if node.module:
                 imports.add(node.module.split('.')[0])
 
-    # Whitelist/Blacklist
     ignored = {'os', 'sys', 'asyncio', 'logging', 'telegram', 'typing', 'datetime', 'json', 're'}
     packages_to_install = []
     
@@ -180,49 +170,34 @@ async def install_dependencies(file_path):
             packages_to_install.append(lib)
 
     if packages_to_install:
-        logger.info(f"Installing dependencies: {packages_to_install}")
         try:
             subprocess.check_call([sys.executable, "-m", "pip", "install", *packages_to_install])
-        except Exception as e:
-            logger.error(f"Failed to install dependencies: {e}")
-
+        except Exception:
+            pass
 
 async def start_user_bot(token, file_path, context_app=None):
-    """Dynamically loads and starts a user bot."""
     try:
-        # 1. Dependency Check
         await install_dependencies(file_path)
-
-        # 2. Dynamic Import
         spec = importlib.util.spec_from_file_location(f"bot_{token[:10]}", file_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules[f"bot_{token[:10]}"] = module
         spec.loader.exec_module(module)
 
-        # 3. Extract Application
         if not hasattr(module, "application"):
             return False, "Code must define an 'application' object."
         
         user_app = module.application
-
-        # 4. Initialize & Start (Inject into asyncio loop)
         await user_app.initialize()
         await user_app.start()
-        
-        # 5. Register Webhook
         webhook_url = f"{RENDER_EXTERNAL_URL}/bot/{token}"
         await user_app.bot.set_webhook(url=webhook_url)
 
-        # 6. Store in Registry
         ACTIVE_BOTS[token] = user_app
-        logger.info(f"Bot {token[:10]} started successfully on webhook {webhook_url}")
-        
         return True, "Bot started successfully."
 
     except Exception as e:
         logger.error(f"Failed to start bot {token}: {e}")
         return False, str(e)
-
 
 async def stop_user_bot(token):
     if token in ACTIVE_BOTS:
@@ -233,13 +208,11 @@ async def stop_user_bot(token):
 
 
 # ==========================================
-# 🎮 PLATFORM INTERFACE (Telegram Handlers)
+# 🎮 TELEGRAM HANDLERS
 # ==========================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    # Save User
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO users (user_id, username, joined_at) VALUES (?, ?, ?)",
@@ -258,28 +231,57 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return CHOOSING
 
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await start(update, context)
+    return CHOOSING
+
+# --- SMART NAVIGATION CHECKER ---
+async def check_navigation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Checks if user clicked a menu button while inside a conversation."""
+    text = update.message.text
+    if text == "🏠 Main Menu" or text == "/start":
+        await back_to_main(update, context)
+        return True
+    if text == "✨ Create Bot (AI)":
+        await create_ai_start(update, context)
+        return True
+    if text == "📤 Host Existing Bot":
+        await host_start(update, context)
+        return True
+    if text == "🆘 Help":
+        await help_start(update, context)
+        return True
+    if text == "📊 My Bots":
+        await my_bots(update, context)
+        return True
+    return False
+
 # --- HOST EXISTING BOT FLOW ---
 async def host_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("1️⃣ Please send me your **Telegram Bot Token** from @BotFather.")
+    await update.message.reply_text(
+        "1️⃣ Please send me your **Telegram Bot Token** from @BotFather.",
+        reply_markup=ReplyKeyboardMarkup([["🏠 Main Menu"]], resize_keyboard=True)
+    )
     return GET_TOKEN_UPLOAD
 
 async def receive_token_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    token = update.message.text.strip()
-    # Simple validation
-    if not re.match(r'^\d+:[A-Za-z0-9_-]+$', token):
-        await update.message.reply_text("❌ Invalid token format. Please try again.")
+    if await check_navigation(update, context): return ConversationHandler.END
+    
+    text = update.message.text.strip()
+    if not re.match(r'^\d+:[A-Za-z0-9_-]+$', text):
+        await update.message.reply_text("❌ Invalid token format. Please try again or click 🏠 Main Menu.")
         return GET_TOKEN_UPLOAD
     
-    context.user_data['token'] = token
-    # FIX: Switched to HTML to prevent Markdown errors with underscores
+    context.user_data['token'] = text
     await update.message.reply_text(
-        "✅ Token accepted.\n\n"
-        "2️⃣ Now, please <b>upload your Python (.py) file</b>.\n"
-        "⚠️ <i>Ensure your code defines an <code>application</code> object and DOES NOT use <code>run_polling()</code>.</i>"
-    , parse_mode='HTML')
+        "✅ Token accepted.\n2️⃣ Please <b>upload your Python (.py) file</b>.", 
+        parse_mode='HTML'
+    )
     return GET_FILE_UPLOAD
 
 async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text and await check_navigation(update, context): return ConversationHandler.END
+
     file = await update.message.document.get_file()
     if not file.file_path.endswith('.py'):
         await update.message.reply_text("❌ Please upload a .py file.")
@@ -292,7 +294,6 @@ async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     status_msg = await update.message.reply_text("⏳ Downloading and scanning file...")
     await file.download_to_drive(file_path)
 
-    # Save to DB
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO bots (user_id, token, file_path, status, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -300,14 +301,11 @@ async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     conn.commit()
     conn.close()
 
-    await context.bot.edit_message_text("⚙️ Installing dependencies and deploying...", chat_id=update.effective_chat.id, message_id=status_msg.message_id)
-
-    # Launch
+    await context.bot.edit_message_text("⚙️ Deploying...", chat_id=update.effective_chat.id, message_id=status_msg.message_id)
     success, msg = await start_user_bot(token, file_path)
     
     if success:
-        # FIX: Switched to HTML
-        await context.bot.edit_message_text(f"🚀 <b>Bot Deployed Successfully!</b>\n\nStatus: Online\nEngine: Webhook", chat_id=update.effective_chat.id, message_id=status_msg.message_id, parse_mode='HTML')
+        await context.bot.edit_message_text(f"🚀 <b>Bot Deployed Successfully!</b>", chat_id=update.effective_chat.id, message_id=status_msg.message_id, parse_mode='HTML')
     else:
         await context.bot.edit_message_text(f"❌ Deployment Failed.\nError: {msg}", chat_id=update.effective_chat.id, message_id=status_msg.message_id)
 
@@ -315,36 +313,39 @@ async def receive_file_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- CREATE AI BOT FLOW ---
 async def create_ai_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✨ Let's create a bot with AI (DeepSeek)!\n\n1️⃣ Send me the **Telegram Bot Token** from @BotFather.")
+    await update.message.reply_text(
+        "✨ Let's create a bot with Google Gemini!\n\n1️⃣ Send me the **Telegram Bot Token** from @BotFather.",
+        reply_markup=ReplyKeyboardMarkup([["🏠 Main Menu"]], resize_keyboard=True)
+    )
     return GET_TOKEN_AI
 
 async def receive_token_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await check_navigation(update, context): return ConversationHandler.END
+
     context.user_data['token'] = update.message.text.strip()
-    # FIX: Switched to HTML
-    await update.message.reply_text("2️⃣ Describe what you want your bot to do.\n\n<i>Example: A bot that welcomes users in groups and deletes links.</i>", parse_mode='HTML')
+    await update.message.reply_text("2️⃣ Describe what you want your bot to do.", parse_mode='HTML')
     return GET_DESC_AI
 
 async def receive_desc_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await check_navigation(update, context): return ConversationHandler.END
+
     description = update.message.text
     token = context.user_data['token']
     
-    status_msg = await update.message.reply_text("🧠 DeepSeek is thinking... (This takes ~15s)")
-    
+    status_msg = await update.message.reply_text("🧠 Gemini is thinking... (This takes ~10s)")
     code, error = await generate_bot_code(description, token)
     
     if error:
         await status_msg.edit_text(f"❌ AI Error: {error}")
         return ConversationHandler.END
 
-    # Save code
     user_id = update.effective_user.id
     file_path = os.path.join(BOTS_DIR, f"{user_id}_{token.split(':')[0]}_ai.py")
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(code)
 
-    await status_msg.edit_text("💾 Code generated! Deploying to server...")
-
-    # Save to DB
+    await status_msg.edit_text("💾 Code generated! Deploying...")
+    
     conn = get_db_connection()
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO bots (user_id, token, file_path, status, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -352,15 +353,43 @@ async def receive_desc_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
 
-    # Launch
     success, msg = await start_user_bot(token, file_path)
     if success:
-        # FIX: Switched to HTML
         await update.message.reply_text(f"🚀 <b>Your AI Bot is LIVE!</b>\n\nTry sending /start to it.", parse_mode='HTML')
     else:
         await update.message.reply_text(f"❌ Deployment Failed.\nError: {msg}")
 
     return ConversationHandler.END
+
+# --- HELP & SUPPORT FLOW ---
+async def help_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🆘 <b>Support Center</b>\n\nDescribe your problem below. I will forward it to the Admin.",
+        parse_mode='HTML',
+        reply_markup=ReplyKeyboardMarkup([["🔙 Back", "🏠 Main Menu"]], resize_keyboard=True)
+    )
+    return GET_HELP_MESSAGE
+
+async def receive_help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await check_navigation(update, context): return ConversationHandler.END
+
+    text = update.message.text
+    user = update.effective_user
+    
+    admin_message = (
+        f"🚨 <b>New Support Ticket</b>\n\n"
+        f"👤 <b>User:</b> {user.first_name} (@{user.username})\n"
+        f"🆔 <b>ID:</b> <code>{user.id}</code>\n\n"
+        f"📝 <b>Issue:</b>\n{text}"
+    )
+    
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=admin_message, parse_mode='HTML')
+        await update.message.reply_text("✅ <b>Ticket Sent!</b>", parse_mode='HTML')
+    except Exception:
+        await update.message.reply_text("❌ Failed to contact admin.")
+
+    return await start(update, context)
 
 # --- INFO & STATS ---
 async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -374,74 +403,43 @@ async def my_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You have no hosted bots.")
         return
 
-    # FIX: Switched to HTML
     msg = "📊 <b>Your Bots:</b>\n"
     for token, status in bots:
-        masked_token = f"{token[:5]}...{token[-5:]}"
-        msg += f"- <code>{masked_token}</code>: {status.upper()}\n"
-    
+        msg += f"- <code>{token[:5]}...</code>: {status.upper()}\n"
     await update.message.reply_text(msg, parse_mode='HTML')
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
+    if update.effective_user.id != ADMIN_ID: return
     conn = get_db_connection()
     c = conn.cursor()
     user_count = c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
     bot_count = c.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
     conn.close()
-    
-    active_runtime = len(ACTIVE_BOTS)
-    
-    await update.message.reply_text(
-        f"👑 **Admin Stats:**\n\n"
-        f"👥 Total Users: {user_count}\n"
-        f"🤖 Total Bots (DB): {bot_count}\n"
-        f"⚡ Active Bots (RAM): {active_runtime}\n"
-        f"🐍 Python: {sys.version.split()[0]}"
-    )
+    await update.message.reply_text(f"👑 **Stats:**\n👥 Users: {user_count}\n🤖 Bots: {bot_count}")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚫 Operation cancelled.")
     return ConversationHandler.END
 
 # ==========================================
-# 🌐 WEBHOOK ROUTER (The Multiplexer)
+# 🌐 WEBHOOK ROUTER
 # ==========================================
 async def webhook_handler(request):
-    """
-    Central router that receives ALL Telegram updates.
-    Routes updates to specific bot instances based on URL token.
-    """
     token = request.match_info.get('token')
-    
-    if token == PLATFORM_BOT_TOKEN:
-        # Update for the Platform Bot itself
-        try:
-            data = await request.json()
-            update = Update.de_json(data, platform_app.bot)
-            await platform_app.process_update(update)
-            return web.Response(text="OK")
-        except Exception as e:
-            logger.error(f"Main Bot Error: {e}")
-            return web.Response(status=500)
+    try:
+        data = await request.json()
+    except:
+        return web.Response(status=400)
 
+    if token == PLATFORM_BOT_TOKEN:
+        update = Update.de_json(data, platform_app.bot)
+        await platform_app.process_update(update)
     elif token in ACTIVE_BOTS:
-        # Update for a User's Bot
-        try:
-            data = await request.json()
-            user_app = ACTIVE_BOTS[token]
-            # Create Update object bound to the user's bot instance
-            update = Update.de_json(data, user_app.bot)
-            # Feed into user bot's event loop
-            await user_app.process_update(update)
-            return web.Response(text="OK")
-        except Exception as e:
-            logger.error(f"User Bot {token[:5]} Error: {e}")
-            return web.Response(status=500)
+        user_app = ACTIVE_BOTS[token]
+        update = Update.de_json(data, user_app.bot)
+        await user_app.process_update(update)
     
-    return web.Response(status=404, text="Bot not found")
+    return web.Response(text="OK")
 
 async def health_check(request):
     return web.Response(text="Alive")
@@ -450,66 +448,45 @@ async def health_check(request):
 # 🚀 MAIN ENTRY POINT
 # ==========================================
 async def restore_bots():
-    """Restores bots from DB on server restart."""
     conn = get_db_connection()
     c = conn.cursor()
     bots = c.execute("SELECT token, file_path FROM bots WHERE status='running'").fetchall()
     conn.close()
-    
-    logger.info(f"♻️ Restoring {len(bots)} bots from database...")
     for token, path in bots:
         if os.path.exists(path):
             await start_user_bot(token, path)
-        else:
-            logger.warning(f"File missing for bot {token}")
 
 async def safe_start_application(app, max_retries=10):
-    """Tries to start the bot with retries on Timeout."""
     for attempt in range(max_retries):
         try:
-            logger.info(f"Attempting to connect to Telegram (Try {attempt+1}/{max_retries})...")
             await app.initialize()
             await app.start()
-            logger.info("✅ Connected to Telegram successfully!")
             return True
-        except Exception as e:
-            logger.warning(f"⚠️ Connection failed: {e}")
-            logger.info("Waiting 5 seconds before retry...")
-            await asyncio.sleep(5) # Wait for network to stabilize
+        except Exception:
+            await asyncio.sleep(5)
     return False
 
 def main():
     global platform_app
-
-    # 1. Initialize DB
     init_db()
 
-    # 2. Build Platform Bot with MAX RELIABILITY SETTINGS
-    # FIX: 120s timeout, HTTP/1.1, and small pool to prevent congestion
-    trequest = HTTPXRequest(
-        connection_pool_size=4,   # Reduced from 20 to 4 (Render specific fix)
-        connect_timeout=120.0,    # Increased to 2 minutes
-        read_timeout=120.0, 
-        write_timeout=120.0,
-        pool_timeout=120.0,
-        http_version="1.1"        # Force HTTP 1.1
-    )
-    
+    trequest = HTTPXRequest(connection_pool_size=4, connect_timeout=120.0, read_timeout=120.0, http_version="1.1")
     platform_app = Application.builder().token(PLATFORM_BOT_TOKEN).request(trequest).build()
 
-    # 3. Add Handlers
     conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex(r"^📤 Host Existing Bot$"), host_start),
             MessageHandler(filters.Regex(r"^✨ Create Bot \(AI\)$"), create_ai_start),
+            MessageHandler(filters.Regex(r"^🆘 Help$"), help_start),
         ],
         states={
             GET_TOKEN_UPLOAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_token_upload)],
-            GET_FILE_UPLOAD: [MessageHandler(filters.Document.FileExtension("py"), receive_file_upload)],
+            GET_FILE_UPLOAD: [MessageHandler(filters.Document.FileExtension("py") | filters.Regex(r"^🏠 Main Menu$"), receive_file_upload)],
             GET_TOKEN_AI: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_token_ai)],
             GET_DESC_AI: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_desc_ai)],
+            GET_HELP_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_help_message)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("start", start)],
     )
 
     platform_app.add_handler(CommandHandler("start", start))
@@ -517,40 +494,21 @@ def main():
     platform_app.add_handler(CommandHandler("stats", admin_stats))
     platform_app.add_handler(conv_handler)
 
-    # 4. Setup Aiohttp Web Server
     app = web.Application()
     app.router.add_post('/bot/{token}', webhook_handler)
     app.router.add_get('/', health_check)
 
-    # 5. Run Everything
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     async def runner():
-        # Initialize Platform Bot (WITH RETRY LOOP)
-        success = await safe_start_application(platform_app)
-        if not success:
-            logger.error("❌ Could not connect to Telegram after multiple retries. Exiting.")
-            sys.exit(1)
-            
-        # Set webhook for the main platform bot
-        logger.info("Setting webhook...")
+        if not await safe_start_application(platform_app): sys.exit(1)
         await platform_app.bot.set_webhook(f"{RENDER_EXTERNAL_URL}/bot/{PLATFORM_BOT_TOKEN}")
-        
-        # Restore user bots
         await restore_bots()
         
-        # Start Web Server
-        logger.info("Starting web server...")
         runner = web.AppRunner(app)
         await runner.setup()
-        port = int(os.environ.get("PORT", 8080))
-        site = web.TCPSite(runner, '0.0.0.0', port)
-        await site.start()
-        
-        logger.info(f"🌍 Server running on port {port}")
-        
-        # Keep alive
+        await web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 8080))).start()
         await asyncio.Event().wait()
 
     try:
