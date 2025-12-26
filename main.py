@@ -1,5 +1,5 @@
 """
-TELEGRAM BOT HOSTING PLATFORM - PRODUCTION FINAL (v5.0)
+TELEGRAM BOT HOSTING PLATFORM - FINAL PRODUCTION (v6.0)
 Host Python Telegram bots for FREE - 24/7
 Powered by Google Gemini 2.0 Flash
 """
@@ -22,7 +22,10 @@ from contextlib import contextmanager
 from typing import Optional, Tuple, Dict, List, Any
 from io import BytesIO
 
+# ==========================================
 # SAFE IMPORT FOR DOTENV
+# ==========================================
+# This prevents the crash on Render if python-dotenv is missing
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -53,11 +56,18 @@ from telegram.error import Forbidden, BadRequest
 # ==========================================
 load_dotenv()
 
+# Admin Configuration
 ADMIN_ID = 8175884349
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 PLATFORM_BOT_TOKEN = "8066184862:AAGxPAHFcwQAmEt9fsAuyZG8DUPt8A-01fY"
+
+# Secure Keys from Environment
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://hostkaro.onrender.com")
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+# Startup Verification
+if not GEMINI_API_KEY:
+    print("⚠️ WARNING: GEMINI_API_KEY not found in Environment Variables! AI features will fail.")
 
 # ==========================================
 # LOGGING
@@ -127,15 +137,10 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(user_id)
         )
     """)
-    # Migrations for existing DBs
-    try:
-        c.execute("SELECT is_blocked FROM bots LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE bots ADD COLUMN is_blocked INTEGER DEFAULT 0")
-    try:
-        c.execute("SELECT update_count FROM bots LIMIT 1")
-    except sqlite3.OperationalError:
-        c.execute("ALTER TABLE bots ADD COLUMN update_count INTEGER DEFAULT 0")
+    try: c.execute("SELECT is_blocked FROM bots LIMIT 1")
+    except: c.execute("ALTER TABLE bots ADD COLUMN is_blocked INTEGER DEFAULT 0")
+    try: c.execute("SELECT update_count FROM bots LIMIT 1")
+    except: c.execute("ALTER TABLE bots ADD COLUMN update_count INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
     logger.info("Database initialized")
@@ -233,7 +238,7 @@ def get_stats():
 # VALIDATION
 # ==========================================
 def validate_python_code(code: str) -> Tuple[bool, str]:
-    # Only checks syntax. Does NOT block imports.
+    # UNRESTRICTED: Allows 'import os' etc.
     try:
         ast.parse(code)
     except SyntaxError as e:
@@ -270,7 +275,7 @@ async def install_dependencies(file_path: str) -> Tuple[bool, str]:
         'sqlite3', 'pickle', 'copy', 'threading', 'contextlib', 'string'
     }
     
-    # CRITICAL MAP: Ensures 'google' import installs the correct package
+    # Package Mapping
     package_map = {
         'telegram': 'python-telegram-bot',
         'PIL': 'Pillow',
@@ -349,7 +354,7 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
             
         user_app = module.application
         
-        # Connection Test
+        # Test Connection
         try:
             me = await user_app.bot.get_me()
             logger.info(f"Bot connected: @{me.username}")
@@ -359,7 +364,6 @@ async def start_user_bot(token: str, file_path: str) -> Tuple[bool, str]:
         await user_app.initialize()
         await user_app.start()
         
-        # Webhook Setup
         webhook_url = f"{RENDER_EXTERNAL_URL}/bot/{token}"
         try:
             await user_app.bot.set_webhook(url=webhook_url)
@@ -567,7 +571,7 @@ async def host_get_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     success, res = await start_user_bot(token, file_path)
     
     if success:
-        await msg.edit_text(f"🚀 <b>Bot Deployed!</b>\n\n@{context.user_data.get('bot_username')}", parse_mode='HTML')
+        await msg.edit_text(f"🚀 <b>Bot Deployed!</b>\n\n@{context.user_data.get('bot_username')}\nRunning: 🟢", parse_mode='HTML')
     else:
         await msg.edit_text(f"❌ Failed: {res}")
     return MAIN_MENU
@@ -680,7 +684,7 @@ async def start_build_process(update: Update, context: ContextTypes.DEFAULT_TYPE
     success, res = await start_user_bot(token, file_path)
     
     if success:
-        await msg.edit_text(f"🎉 <b>Bot Launched!</b>\n\n🤖 @{data['username']}\nStatus: 🟢 Online", parse_mode='HTML')
+        await msg.edit_text(f"🎉 <b>Bot Launched!</b>\n\n🤖 @{data['username']}\nStatus: 🟢 Online\n\nTry sending /start to it!", parse_mode='HTML')
     else:
         await msg.edit_text(f"❌ Deployment Error: {res}")
 
